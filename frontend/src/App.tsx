@@ -997,29 +997,26 @@ export default function App() {
 
       {/* Run controls */}
       <section className="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 shadow-xl shadow-black/30">
-        <label htmlFor="prompt" className="mb-2 block text-sm font-medium text-zinc-300">
-          Prompt
-        </label>
-        <textarea
-          id="prompt"
-          rows={5}
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Ask something you want several models to answer independently…"
-          className="w-full resize-y rounded-xl border border-zinc-700 bg-zinc-950/80 px-3 py-2.5 font-sans text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-
-        <div className="mt-4">
-          <p className="mb-2 text-sm font-medium text-zinc-300">Attachments</p>
-          <PromptAttachments
-            attachments={attachments}
-            onChange={setAttachments}
-            onError={setAttachmentError}
+        <PromptAttachments
+          attachments={attachments}
+          onChange={setAttachments}
+          onError={setAttachmentError}
+        >
+          <label htmlFor="prompt" className="mb-2 block text-sm font-medium text-zinc-300">
+            Prompt
+          </label>
+          <textarea
+            id="prompt"
+            rows={5}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Ask something… Drag images onto this box to attach them."
+            className="w-full resize-y rounded-xl border border-zinc-700 bg-zinc-950/80 px-3 py-2.5 font-sans text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
-          {attachmentError ? (
-            <p className="mt-2 text-sm text-amber-400/95">{attachmentError}</p>
-          ) : null}
-        </div>
+        </PromptAttachments>
+        {attachmentError ? (
+          <p className="mt-2 text-sm text-amber-400/95">{attachmentError}</p>
+        ) : null}
 
         {/* Mode selector */}
         <div className="mt-6">
