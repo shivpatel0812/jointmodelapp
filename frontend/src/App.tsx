@@ -364,6 +364,7 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  const [showChatDrawer, setShowChatDrawer] = useState(false);
 
   /** Snapshot of the prompt used for the most recently displayed result set,
    *  needed to seed `branchSource.originalPrompt` when creating a branch chat. */
@@ -388,6 +389,12 @@ export default function App() {
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, [showModelPicker]);
+
+  useEffect(() => {
+    if (!chat) {
+      setShowChatDrawer(false);
+    }
+  }, [chat]);
 
   // Finish redirect OAuth once per page load, then subscribe (Strict Mode–safe).
   useEffect(() => {
@@ -1079,14 +1086,25 @@ export default function App() {
               <span className="mx-1.5 text-zinc-600">/</span>
               <span className="text-zinc-300">{breadcrumbChat}</span>
             </nav>
-            <header className="mb-5">
-              <h1 className="text-xl font-semibold tracking-tight text-white sm:text-2xl">
-                Multi-model responses and joint pipeline
-              </h1>
-              <p className="mt-1 max-w-2xl text-xs leading-snug text-zinc-500 sm:text-sm">
-                Compare side-by-side, synthesize, or run draft → critique → improve → verify →
-                final.
-              </p>
+            <header className="mb-5 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h1 className="text-xl font-semibold tracking-tight text-white sm:text-2xl">
+                  Multi-model responses and joint pipeline
+                </h1>
+                <p className="mt-1 max-w-2xl text-xs leading-snug text-zinc-500 sm:text-sm">
+                  Compare side-by-side, synthesize, or run draft → critique → improve → verify →
+                  final.
+                </p>
+              </div>
+              {user && chat ? (
+                <button
+                  type="button"
+                  onClick={() => setShowChatDrawer(true)}
+                  className="rounded-lg border border-zinc-700 bg-zinc-900/70 px-3 py-2 text-xs font-medium text-zinc-200 transition hover:border-zinc-600 hover:bg-zinc-800"
+                >
+                  Chat more ({messages.length})
+                </button>
+              ) : null}
             </header>
             {authError ? (
               <div className="mb-4 rounded-xl border border-red-900/40 bg-red-950/30 px-3 py-2 text-xs text-red-200">
@@ -1098,21 +1116,6 @@ export default function App() {
                 source={chat.branchSource}
                 onOpenParent={chat.parentChatId ? () => void openParentChat() : undefined}
               />
-            ) : null}
-            {user && chat ? (
-              <details className="mb-4 rounded-lg border border-zinc-800/80 bg-zinc-950/40">
-                <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-zinc-400">
-                  Chat messages ({messages.length})
-                </summary>
-                <div className="border-t border-zinc-800/80 px-2 pb-2">
-                  <ChatThread
-                    chat={chat}
-                    messages={messages}
-                    loading={messagesLoading}
-                    embedded
-                  />
-                </div>
-              </details>
             ) : null}
           </>
         )}
@@ -1520,6 +1523,46 @@ export default function App() {
           >
             dismiss
           </button>
+        </div>
+      ) : null}
+
+      {/* Right-side chat drawer */}
+      {user && chat && showChatDrawer ? (
+        <div className="fixed inset-0 z-[110]">
+          <button
+            type="button"
+            aria-label="Close chat drawer"
+            onClick={() => setShowChatDrawer(false)}
+            className="absolute inset-0 bg-black/55 backdrop-blur-[1px]"
+          />
+          <aside className="absolute right-0 top-0 h-full w-full max-w-xl border-l border-zinc-800 bg-[#0f0f11] shadow-2xl shadow-black/50">
+            <div className="flex h-full flex-col">
+              <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-zinc-500">Chat thread</p>
+                  <p className="truncate text-sm font-medium text-zinc-100">{chat.title}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowChatDrawer(false)}
+                  className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 transition hover:bg-zinc-900"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3">
+                {chat.isBranch && chat.branchSource ? (
+                  <BranchContextCard
+                    source={chat.branchSource}
+                    onOpenParent={chat.parentChatId ? () => void openParentChat() : undefined}
+                  />
+                ) : null}
+                <div className="rounded-lg border border-zinc-800/80 bg-zinc-950/40">
+                  <ChatThread chat={chat} messages={messages} loading={messagesLoading} embedded />
+                </div>
+              </div>
+            </div>
+          </aside>
         </div>
       ) : null}
 
