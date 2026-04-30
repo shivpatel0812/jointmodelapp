@@ -907,8 +907,8 @@ export default function App() {
             rows={4}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Ask something… Drag images onto this box to attach them."
-            className="w-full resize-y rounded-lg border border-zinc-700/90 bg-zinc-950 px-2.5 py-2 font-sans text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            placeholder="Ask something… (drag images here or use Browse below)"
+            className="w-full resize-y rounded-md border border-zinc-800/70 bg-zinc-950/60 px-2.5 py-2 font-sans text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-blue-500/80 focus:outline-none focus:ring-1 focus:ring-blue-500/40"
           />
         </PromptAttachments>
         {attachmentError ? (

@@ -106,31 +106,31 @@ export function PromptAttachments({ children, attachments, onChange, onError }: 
         onDragLeave={onDragLeave}
         onDragOver={onDragOver}
         onDrop={onDrop}
-        className={`relative rounded-lg border transition ${
+        className={`relative transition ${
           dragOver
-            ? "border-blue-500/70 bg-blue-500/[0.06] ring-1 ring-blue-500/30"
-            : "border-zinc-800/80 bg-zinc-950/50"
+            ? "rounded-md border border-blue-500/60 bg-blue-500/[0.07] ring-1 ring-blue-500/25"
+            : "border border-transparent bg-transparent"
         }`}
       >
         {dragOver ? (
           <div
-            className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-zinc-950/75 backdrop-blur-[2px]"
+            className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-md bg-zinc-950/80 backdrop-blur-[1px]"
             aria-hidden
           >
-            <p className="rounded-lg border border-blue-500/50 bg-blue-950/80 px-4 py-3 text-sm font-medium text-blue-100 shadow-lg">
-              Drop images here to attach
+            <p className="rounded-md border border-blue-500/50 bg-blue-950/85 px-3 py-2 text-xs font-medium text-blue-100">
+              Drop images to attach
             </p>
           </div>
         ) : null}
 
-        <div className="relative z-10 space-y-2 p-2 sm:p-2.5">
+        <div className="relative z-10 space-y-2">
           {children}
 
-          <div className="flex flex-col gap-1.5 border-t border-zinc-800/60 pt-2">
+          <div className="flex flex-col gap-1 border-t border-zinc-800/40 pt-1.5">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
               <p className="text-[11px] leading-snug text-zinc-600">
-                Drag & drop images onto this prompt box · PNG / JPEG / WebP · max{" "}
-                {MAX_ATTACHMENT_COUNT} · {Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024))} MB each
+                Images: drag here or browse · PNG / JPEG / WebP · max {MAX_ATTACHMENT_COUNT} ·{" "}
+                {Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024))} MB each
               </p>
               <button
                 type="button"
@@ -158,7 +158,7 @@ export function PromptAttachments({ children, attachments, onChange, onError }: 
                 {attachments.map((a) => (
                   <li
                     key={a.id}
-                    className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900/80 px-2 py-1.5 text-sm text-zinc-200"
+                    className="flex items-center gap-2 rounded-md border border-zinc-800/90 bg-zinc-900/60 px-2 py-1 text-xs text-zinc-200"
                   >
                     <span className="max-w-[160px] truncate font-medium" title={a.fileName}>
                       {a.fileName}
