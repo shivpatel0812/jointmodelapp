@@ -69,6 +69,24 @@ export function ChatThread({ chat, messages, loading, embedded }: Props) {
               <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-zinc-200">
                 {m.content}
               </pre>
+              {m.role === "user" &&
+              Array.isArray(m.attachments) &&
+              m.attachments.length > 0 ? (
+                <div className="mt-2 flex flex-wrap gap-2 border-t border-blue-900/30 pt-2">
+                  <span className="text-[10px] uppercase tracking-wide text-zinc-500">
+                    Attachments (metadata)
+                  </span>
+                  {m.attachments.map((a, i) => (
+                    <span
+                      key={`${a.fileName}-${i}`}
+                      className="rounded-md border border-blue-900/40 bg-blue-950/40 px-2 py-0.5 font-mono text-[11px] text-blue-200/90"
+                      title={`${a.mimeType} · ${a.sizeBytes} bytes`}
+                    >
+                      {a.fileName}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
             </li>
           ))}
         </ol>

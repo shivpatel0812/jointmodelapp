@@ -24,11 +24,15 @@ export async function recordUserMessage(
   chatId: string,
   prompt: string,
   mode: RunMode,
+  opts?: {
+    attachments?: { fileName: string; mimeType: string; sizeBytes: number }[];
+  },
 ): Promise<string> {
   const id = await saveMessage(uid, chatId, {
     role: "user",
     content: prompt,
     mode,
+    attachments: opts?.attachments?.length ? opts.attachments : undefined,
   });
   await touchChat(uid, chatId).catch(() => {
     // best-effort
@@ -55,10 +59,12 @@ export async function recordCompareOutputs(
         : o.skipped
           ? `[skipped: ${o.skip_reason ?? "unavailable"}]`
           : (o.content ?? "");
-      if (!content) return Promise.resolve("");
+      const note = o.attachment_note?.trim();
+      const body = note ? `${content}${content ? "\n\n" : ""}— ${note}` : content;
+      if (!body) return Promise.resolve("");
       return saveMessage(uid, chatId, {
         role,
-        content,
+        content: body,
         modelId: o.model_id,
         mode,
         latencyMs: o.latency_ms ?? null,

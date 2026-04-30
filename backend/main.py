@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import re
@@ -19,6 +20,14 @@ from context import (
     ContextMessage,
     build_context_for_prompt,
     format_context_block,
+)
+from vision_media import (
+    DecodedImage,
+    ImageAttachment,
+    SKIP_IMAGE_UNSUPPORTED,
+    clamp_images_for_model,
+    meta_supports_vision,
+    normalize_images,
 )
 
 # Always load backend/.env even if uvicorn is started from another cwd.
@@ -43,42 +52,67 @@ SYNTHESIS_MODEL_ID = os.getenv("SYNTHESIS_MODEL_ID") or JUDGE_MODEL_ID
 _JUDGE_MAX_CHARS_PER_ANSWER = 10_000
 
 # Registered models for v1: parallel generation only (orchestration comes later).
+# Vision flags follow vendor multimodal chat APIs; keep conservative TODO if adding models.
 MODEL_REGISTRY: list[dict[str, Any]] = [
     {
         "id": "gpt-4o-mini",
         "provider": "openai",
         "label": "GPT-4o Mini",
+        "supports_vision": True,
+        "supported_input_types": ["text", "image"],
+        "max_images": 8,
+        "image_notes": "OpenAI Chat Completions vision via base64 data URLs.",
     },
     {
         "id": "gpt-4o",
         "provider": "openai",
         "label": "GPT-4o",
+        "supports_vision": True,
+        "supported_input_types": ["text", "image"],
+        "max_images": 8,
+        "image_notes": "OpenAI Chat Completions vision.",
     },
     {
         "id": "claude-haiku-4-5",
         "provider": "anthropic",
         "label": "Claude Haiku 4.5",
+        "supports_vision": True,
+        "supported_input_types": ["text", "image"],
+        "max_images": 8,
+        "image_notes": "Anthropic Messages API image blocks (base64).",
     },
     {
         "id": "claude-sonnet-4-5",
         "provider": "anthropic",
         "label": "Claude Sonnet 4.5",
+        "supports_vision": True,
+        "supported_input_types": ["text", "image"],
+        "max_images": 8,
+        "image_notes": "Anthropic Messages API image blocks (base64).",
     },
     {
         "id": "gemini-2.0-flash",
         "provider": "gemini",
         "label": "Gemini 2.0 Flash",
+        "supports_vision": True,
+        "supported_input_types": ["text", "image"],
+        "max_images": 8,
+        "image_notes": "Gemini generate_content inline image parts.",
     },
     {
         "id": "gemini-2.5-flash",
         "provider": "gemini",
         "label": "Gemini 2.5 Flash",
+        "supports_vision": True,
+        "supported_input_types": ["text", "image"],
+        "max_images": 8,
+        "image_notes": "Gemini generate_content inline image parts.",
     },
 ]
 
 
 class GenerateRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=32000)
+    prompt: str = Field(default="", max_length=32000)
     model_ids: list[str] | None = Field(
         default=None,
         description="Subset of model ids; default = all models with configured API keys.",
@@ -89,6 +123,11 @@ class GenerateRequest(BaseModel):
             "Optional memory snapshot (project + chat summary, recent messages, "
             "decisions, open questions). Already fetched + truncated client-side."
         ),
+    )
+    images: list[ImageAttachment] | None = Field(
+        default=None,
+        max_length=5,
+        description="Optional multimodal attachments (base64). Omit or empty for text-only.",
     )
 
 
@@ -102,6 +141,10 @@ class ModelOutput(BaseModel):
     skip_reason: str | None = None
     # Wall-clock ms for this model's generation (None if skipped before provider call).
     latency_ms: float | None = None
+    attachment_note: str | None = Field(
+        default=None,
+        description='UI hint e.g. "Images used: 2" or "Text only".',
+    )
 
 
 class ModelInfo(BaseModel):
@@ -110,6 +153,10 @@ class ModelInfo(BaseModel):
     label: str
     available: bool
     unavailable_reason: str | None = None
+    supports_vision: bool = False
+    supported_input_types: list[str] = Field(default_factory=lambda: ["text"])
+    max_images: int = 0
+    image_notes: str | None = None
 
 
 class EvaluateCandidate(BaseModel):
@@ -120,6 +167,11 @@ class EvaluateCandidate(BaseModel):
         default=None,
         ge=0,
         description="Optional client-reported latency for highlights.fastest_model_id.",
+    )
+    input_note: str | None = Field(
+        default=None,
+        max_length=600,
+        description="Whether this candidate saw attached images vs text-only.",
     )
 
 
@@ -148,6 +200,14 @@ class EvaluateRequest(BaseModel):
     context: ContextBlock | None = Field(
         default=None,
         description="Optional memory snapshot used to ground judging + synthesis.",
+    )
+    run_attachment_note: str | None = Field(
+        default=None,
+        max_length=4000,
+        description=(
+            "Human-readable summary for the judge: which models processed images, "
+            "which were skipped as text-only, etc."
+        ),
     )
 
 
@@ -182,7 +242,7 @@ class EvaluationResult(BaseModel):
 
 
 class PipelineRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=32000)
+    prompt: str = Field(default="", max_length=32000)
     draft_model_id: str = Field(..., min_length=1, max_length=256)
     critic_model_id: str = Field(..., min_length=1, max_length=256)
     improver_model_id: str = Field(..., min_length=1, max_length=256)
@@ -191,6 +251,11 @@ class PipelineRequest(BaseModel):
     context: ContextBlock | None = Field(
         default=None,
         description="Optional memory snapshot included in EVERY pipeline step prompt.",
+    )
+    images: list[ImageAttachment] | None = Field(
+        default=None,
+        max_length=5,
+        description="Optional images — draft model must support vision.",
     )
 
 
@@ -226,6 +291,7 @@ class PipelineStepResult(BaseModel):
     skipped: bool = False
     skip_reason: str | None = None
     latency_ms: float | None = None
+    attachment_note: str | None = None
 
 
 class PipelineResult(BaseModel):
@@ -302,6 +368,96 @@ async def _run_gemini(model_id: str, prompt: str) -> str:
         contents=prompt,
     )
     return (resp.text or "").strip()
+
+
+async def _run_openai_with_images(
+    model_id: str,
+    prompt: str,
+    images: list[DecodedImage],
+) -> str:
+    assert OPENAI_CLIENT is not None
+    parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for im in images:
+        b64 = base64.b64encode(im.data).decode("ascii")
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{im.mime_type};base64,{b64}"},
+            },
+        )
+    resp = await OPENAI_CLIENT.chat.completions.create(
+        model=model_id,
+        messages=[{"role": "user", "content": parts}],
+    )
+    choice = resp.choices[0].message.content
+    return choice or ""
+
+
+async def _run_anthropic_with_images(
+    model_id: str,
+    prompt: str,
+    images: list[DecodedImage],
+) -> str:
+    assert ANTHROPIC_CLIENT is not None
+    blocks: list[dict[str, Any]] = []
+    for im in images:
+        blocks.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": im.mime_type,
+                    "data": base64.b64encode(im.data).decode("ascii"),
+                },
+            }
+        )
+    blocks.append({"type": "text", "text": prompt})
+    resp = await ANTHROPIC_CLIENT.messages.create(
+        model=model_id,
+        max_tokens=4096,
+        messages=[{"role": "user", "content": blocks}],
+    )
+    text_parts: list[str] = []
+    for block in resp.content:
+        if getattr(block, "type", None) == "text":
+            text_parts.append(block.text)
+    return "".join(text_parts)
+
+
+async def _run_gemini_with_images(
+    model_id: str,
+    prompt: str,
+    images: list[DecodedImage],
+) -> str:
+    assert GEMINI_CLIENT is not None
+    from google.genai import types as genai_types
+
+    parts: list[Any] = []
+    for im in images:
+        parts.append(genai_types.Part.from_bytes(data=im.data, mime_type=im.mime_type))
+    parts.append(genai_types.Part(text=prompt))
+    resp = await GEMINI_CLIENT.aio.models.generate_content(
+        model=model_id,
+        contents=[genai_types.Content(role="user", parts=parts)],
+    )
+    return (resp.text or "").strip()
+
+
+async def _run_model_multimodal(
+    meta: dict[str, Any],
+    prompt: str,
+    images: list[DecodedImage],
+) -> str:
+    provider = meta["provider"]
+    model_id = meta["id"]
+    used = clamp_images_for_model(meta, images)
+    if provider == "openai":
+        return await _run_openai_with_images(model_id, prompt, used)
+    if provider == "anthropic":
+        return await _run_anthropic_with_images(model_id, prompt, used)
+    if provider == "gemini":
+        return await _run_gemini_with_images(model_id, prompt, used)
+    raise ValueError(f"Unknown provider: {provider}")
 
 
 async def _run_model_text(meta: dict[str, Any], prompt: str) -> str:
@@ -451,6 +607,8 @@ async def _run_pipeline_step(
     meta: dict[str, Any],
     prompt: str,
     structured_keys: list[str] | None = None,
+    *,
+    images: list[DecodedImage] | None = None,
 ) -> PipelineStepResult:
     ok, reason = _model_available(meta)
     if not ok:
@@ -463,9 +621,26 @@ async def _run_pipeline_step(
             skipped=True,
             skip_reason=reason,
         )
+    use_images = bool(images)
+    if use_images and not meta_supports_vision(meta):
+        return PipelineStepResult(
+            step=step,
+            model_id=meta["id"],
+            provider=meta["provider"],
+            label=meta["label"],
+            skipped=True,
+            skip_reason=SKIP_IMAGE_UNSUPPORTED,
+            attachment_note="Images not supported",
+        )
     t0 = time.perf_counter()
     try:
-        content = await _run_model_text(meta, prompt)
+        if use_images:
+            assert images is not None
+            content = await _run_model_multimodal(meta, prompt, images)
+            att_note = f"Images used: {len(clamp_images_for_model(meta, images))}"
+        else:
+            content = await _run_model_text(meta, prompt)
+            att_note = None
         latency_ms = round((time.perf_counter() - t0) * 1000, 1)
         structured = (
             _structured_from_text(content, structured_keys)
@@ -480,6 +655,7 @@ async def _run_pipeline_step(
             content=content,
             structured=structured,
             latency_ms=latency_ms,
+            attachment_note=att_note,
         )
     except Exception as e:  # noqa: BLE001
         latency_ms = round((time.perf_counter() - t0) * 1000, 1)
@@ -578,20 +754,32 @@ async def evaluate(req: EvaluateRequest) -> EvaluationResult:
         else ""
     )
 
+    attach_policy = (req.run_attachment_note or "").strip()
+    attach_block = ""
+    if attach_policy:
+        attach_block = (
+            "Multimodal / attachment policy (how candidates were produced):\n"
+            f"{attach_policy}\n\n"
+        )
+
     lines: list[str] = [
         f"User task / question:\n{req.prompt.strip()}\n",
+        attach_block,
         context_section,
         excluded_block,
-        "Candidate answers (only these may receive scores and may win):\n",
+        "Candidate answers (only these may receive scores and may win).\n"
+        "If input_note says only some models saw images, score accordingly—do not assume equal inputs.\n",
     ]
     for i, c in enumerate(screened, start=1):
         body = c.content.strip()
         if len(body) > _JUDGE_MAX_CHARS_PER_ANSWER:
             body = body[:_JUDGE_MAX_CHARS_PER_ANSWER] + "\n…[truncated for judge context]"
+        note_line = f"input_note: {c.input_note}\n" if c.input_note else ""
         lines.append(
             f"--- Candidate {i} ---\n"
             f"model_id: {c.model_id}\n"
             f"label: {c.label}\n"
+            f"{note_line}"
             f"answer:\n{body}\n"
         )
     user_blob = "\n".join(lines)
@@ -646,7 +834,10 @@ Rules:
             "non-redundant parts of the candidate answers. Resolve disagreements cautiously "
             "(prefer hedging or 'sources differ' when candidates conflict). Do not invent "
             "facts beyond what candidates support. Omit model names unless needed for clarity. "
-            "Stay consistent with the project context if provided.",
+            "Stay consistent with the project context if provided. "
+            "If input_notes indicate only some candidates processed images, prefer image-informed "
+            "reasoning when the question depends on visuals; otherwise say what is uncertain.",
+            (f"\nAttachment policy:\n{attach_policy}\n" if attach_policy else ""),
             f"\nOriginal question:\n{req.prompt.strip()}\n",
             (f"\nProject / chat context:\n{context_text}\n" if context_text else ""),
             "\nCandidates:\n",
@@ -799,7 +990,24 @@ async def run_pipeline(req: PipelineRequest) -> PipelineResult:
         if model_id not in registry:
             raise HTTPException(status_code=400, detail=f"Unknown model_id: {model_id}")
 
+    decoded = normalize_images(req.images)
     prompt = req.prompt.strip()
+    if not prompt and not decoded:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a non-empty prompt and/or image attachments.",
+        )
+
+    draft_meta = registry[req.draft_model_id]
+    if decoded and not meta_supports_vision(draft_meta):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Image attachments require a vision-capable Draft model. "
+                f"'{draft_meta['label']}' does not support image input — pick another Draft model."
+            ),
+        )
+
     trace: list[PipelineStepResult] = []
 
     # Memory / project context — included in every step so the pipeline does not
@@ -815,6 +1023,7 @@ Task: Write the best initial draft answer to the original prompt. Stay directly 
         "draft",
         registry[req.draft_model_id],
         draft_prompt,
+        images=decoded if decoded else None,
     )
     trace.append(draft)
     if draft.error or draft.skipped or not draft.content:
@@ -898,9 +1107,18 @@ Task: Produce an improved answer. Keep what is strong, address the critique, rem
         "and should preserve uncertainty where the improved answer lacks support."
     )
     if req.verifier_model_id:
+        vm = registry[req.verifier_model_id]
+        verify_images = decoded if decoded and meta_supports_vision(vm) else None
+        verify_hdr = ""
+        if decoded and not verify_images:
+            verify_hdr = (
+                f"\n[Note: The user attached {len(decoded)} reference image(s). "
+                "This verification step only examines the improved answer text, "
+                "not the raw image pixels — flag claims that need visual confirmation.]\n"
+            )
         verify_prompt = f"""{context_section}Original user prompt:
 {prompt}
-
+{verify_hdr}
 Improved answer to verify:
 {improve.content}
 
@@ -923,6 +1141,7 @@ Be conservative. If a claim needs external checking, list it under claims_to_ver
                 "claims_to_verify",
                 "final_recommendations",
             ],
+            images=verify_images,
         )
         trace.append(verify)
         if verify.error or verify.skipped or not verify.content:
@@ -962,7 +1181,12 @@ Task: Produce the final joint answer for the user. The final answer must be gene
     return PipelineResult(status=status, final_answer=final.content, trace=trace)
 
 
-async def _generate_one(meta: dict[str, Any], prompt: str) -> ModelOutput:
+async def _generate_one(
+    meta: dict[str, Any],
+    prompt: str,
+    *,
+    images: list[DecodedImage] | None = None,
+) -> ModelOutput:
     mid = meta["id"]
     label = meta["label"]
     provider = meta["provider"]
@@ -975,6 +1199,33 @@ async def _generate_one(meta: dict[str, Any], prompt: str) -> ModelOutput:
             skipped=True,
             skip_reason=reason,
         )
+    if images:
+        if not meta_supports_vision(meta):
+            return ModelOutput(
+                model_id=mid,
+                provider=provider,
+                label=label,
+                skipped=True,
+                skip_reason=SKIP_IMAGE_UNSUPPORTED,
+                attachment_note="Images not supported",
+            )
+        try:
+            used = clamp_images_for_model(meta, images)
+            text = await _run_model_multimodal(meta, prompt, images)
+            return ModelOutput(
+                model_id=mid,
+                provider=provider,
+                label=label,
+                content=text,
+                attachment_note=f"Images used: {len(used)}",
+            )
+        except Exception as e:  # noqa: BLE001
+            return ModelOutput(
+                model_id=mid,
+                provider=provider,
+                label=label,
+                error=str(e),
+            )
     try:
         if provider == "openai":
             text = await _run_openai(mid, prompt)
@@ -994,6 +1245,7 @@ async def _generate_one(meta: dict[str, Any], prompt: str) -> ModelOutput:
             provider=provider,
             label=label,
             content=text,
+            attachment_note=None,
         )
     except Exception as e:  # noqa: BLE001 — surface per-model failures to the client
         return ModelOutput(
@@ -1014,6 +1266,14 @@ async def list_models() -> list[ModelInfo]:
     out: list[ModelInfo] = []
     for meta in MODEL_REGISTRY:
         ok, reason = _model_available(meta)
+        types_in = meta.get("supported_input_types")
+        if not isinstance(types_in, list):
+            types_in = ["text"]
+        max_img = meta.get("max_images")
+        try:
+            max_img_i = int(max_img) if max_img is not None else 0
+        except (TypeError, ValueError):
+            max_img_i = 0
         out.append(
             ModelInfo(
                 model_id=meta["id"],
@@ -1021,6 +1281,10 @@ async def list_models() -> list[ModelInfo]:
                 label=meta["label"],
                 available=ok,
                 unavailable_reason=reason if not ok else None,
+                supports_vision=bool(meta.get("supports_vision", False)),
+                supported_input_types=[str(x) for x in types_in],
+                max_images=max_img_i,
+                image_notes=meta.get("image_notes"),
             )
         )
     return out
@@ -1029,6 +1293,17 @@ async def list_models() -> list[ModelInfo]:
 @app.post("/api/generate", response_model=list[ModelOutput])
 async def generate(req: GenerateRequest) -> list[ModelOutput]:
     registry = _registry_by_id()
+    decoded = normalize_images(req.images)
+    user_prompt = req.prompt.strip()
+    if not user_prompt and not decoded:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide a non-empty prompt and/or at least one image attachment.",
+        )
+    effective_prompt = user_prompt or (
+        "(The user attached images; follow instructions using the images.)"
+    )
+
     if req.model_ids is not None and len(req.model_ids) == 0:
         raise HTTPException(
             status_code=400,
@@ -1060,12 +1335,16 @@ async def generate(req: GenerateRequest) -> list[ModelOutput]:
 
     async def _timed(meta: dict[str, Any], p: str) -> ModelOutput:
         t0 = time.perf_counter()
-        out = await _generate_one(meta, p)
+        out = await _generate_one(
+            meta,
+            p,
+            images=decoded if decoded else None,
+        )
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         if out.skipped:
             return out.model_copy(update={"latency_ms": None})
         return out.model_copy(update={"latency_ms": elapsed_ms})
 
-    composed_prompt = build_context_for_prompt(req.context, req.prompt)
+    composed_prompt = build_context_for_prompt(req.context, effective_prompt)
     tasks = [_timed(meta, composed_prompt) for meta in chosen]
     return await asyncio.gather(*tasks)

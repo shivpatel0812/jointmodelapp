@@ -21,6 +21,12 @@ import {
 } from "./api";
 import { AppSidebar } from "./components/AppSidebar";
 import { ChatThread } from "./components/ChatThread";
+import { PromptAttachments } from "./components/PromptAttachments";
+import {
+  attachmentSummaryMeta,
+  toImagePayloads,
+  type LocalAttachment,
+} from "./promptAttachments";
 import { buildContextForPrompt } from "./context";
 import { type SavedRun, loadRecentRuns, makeSummary, saveRun } from "./db";
 import { loadMessages } from "./firestore/messages";
@@ -68,6 +74,33 @@ function briefErrorReason(raw: string): string {
   const line = raw.split("\n")[0]?.trim() || raw.trim();
   if (line.length <= 240) return line;
   return `${line.slice(0, 237)}…`;
+}
+
+function buildRunAttachmentNote(outputs: ModelOutput[], imageCount: number): string | null {
+  if (imageCount <= 0) return null;
+  const processed = outputs.filter(
+    (o) =>
+      !o.skipped &&
+      !o.error &&
+      typeof o.attachment_note === "string" &&
+      o.attachment_note.startsWith("Images used"),
+  );
+  const skippedImg = outputs.filter(
+    (o) =>
+      o.skipped &&
+      (o.skip_reason?.includes("image input") ||
+        o.skip_reason?.includes("does not support image")),
+  );
+  return [
+    `The user included ${imageCount} image attachment(s).`,
+    `Models that processed the images: ${processed.map((o) => `${o.label} (${o.model_id})`).join(", ") || "(none)"}.`,
+    skippedImg.length > 0
+      ? `Skipped or did not receive images: ${skippedImg.map((o) => `${o.label}: ${o.skip_reason ?? ""}`).join("; ")}.`
+      : "",
+    "Score candidates fairly given unequal inputs where applicable.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function labelForModelId(models: ModelOutput[], id: string): string {
@@ -167,6 +200,9 @@ function PipelineStepCard({ step }: { step: PipelineStepResult }) {
         ) : null}
       </summary>
       <div className="border-t border-slate-800 px-4 py-4">
+        {step.attachment_note ? (
+          <p className="mb-3 text-xs text-slate-400">{step.attachment_note}</p>
+        ) : null}
         {failed || step.skipped ? (
           <p className={failed ? "text-sm text-red-200" : "text-sm text-amber-200"}>
             {briefErrorReason(step.error ?? step.skip_reason ?? "Step did not run")}
@@ -290,11 +326,22 @@ function OutputCard({
           </pre>
         )}
       </div>
-      {isOk && row.latency_ms != null ? (
-        <footer className="border-t border-slate-800/80 px-4 py-2 text-right text-xs text-slate-500">
-          {row.latency_ms.toLocaleString(undefined, { maximumFractionDigits: 0 })} ms
-        </footer>
-      ) : null}
+      <footer className="border-t border-slate-800/80 px-4 py-2 text-xs text-slate-500">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-slate-400">
+            {row.attachment_note
+              ? row.attachment_note
+              : isOk
+                ? "Text only"
+                : null}
+          </span>
+          {isOk && row.latency_ms != null ? (
+            <span className="font-mono">
+              {row.latency_ms.toLocaleString(undefined, { maximumFractionDigits: 0 })} ms
+            </span>
+          ) : null}
+        </div>
+      </footer>
     </article>
   );
 }
@@ -404,6 +451,8 @@ export default function App() {
   });
   const [loading, setLoading] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<LocalAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -535,6 +584,13 @@ export default function App() {
   );
   const availableModels = useMemo(() => models.filter((m) => m.available), [models]);
 
+  const draftModelMeta = useMemo(
+    () => models.find((m) => m.model_id === pipelineModels.draft),
+    [models, pipelineModels.draft],
+  );
+  const draftSupportsVision = draftModelMeta?.supports_vision ?? false;
+  const hasImageAttachments = attachments.length > 0;
+
   const toggle = useCallback((id: string) => {
     setSelected((s) => ({ ...s, [id]: !s[id] }));
   }, []);
@@ -594,7 +650,11 @@ export default function App() {
 
   const run = useCallback(async () => {
     const trimmed = prompt.trim();
-    if (!trimmed) return;
+    const imagePayloads =
+      attachments.length > 0 ? toImagePayloads(attachments) : null;
+    if (!trimmed && (!imagePayloads || imagePayloads.length === 0)) return;
+    const promptForMemory = trimmed || "(Image-only prompt)";
+    const promptForContext = trimmed || "(User attached images; respond using them.)";
     setLoading(true);
     setRunError(null);
     setSaveError(null);
@@ -614,7 +674,7 @@ export default function App() {
             user.uid,
             project?.id ?? null,
             chat?.id ?? null,
-            trimmed,
+            promptForContext,
           );
           if (built.hasContent) {
             contextBlock = built.context;
@@ -628,7 +688,10 @@ export default function App() {
       // Save the user's message immediately (gives the thread a record even if
       // the run errors out later).
       if (user && chat) {
-        await recordUserMessage(user.uid, chat.id, trimmed, mode).catch(() => {
+        await recordUserMessage(user.uid, chat.id, promptForMemory, mode, {
+          attachments:
+            attachments.length > 0 ? attachmentSummaryMeta(attachments) : undefined,
+        }).catch(() => {
           /* best-effort */
         });
       }
@@ -644,6 +707,7 @@ export default function App() {
             final_model_id: pipelineModels.final,
           },
           contextBlock,
+          imagePayloads,
         );
         finalPipeline = result;
         setPipelineResult(result);
@@ -653,7 +717,7 @@ export default function App() {
           });
         }
       } else {
-        const results = await generateParallel(trimmed, selectedIds, contextBlock);
+        const results = await generateParallel(trimmed, selectedIds, contextBlock, imagePayloads);
         finalOutputs = results;
         setOutputs(results);
         if (user && chat) {
@@ -678,13 +742,16 @@ export default function App() {
               label: r.label,
               content: r.content!.trim(),
               latency_ms: r.latency_ms ?? null,
+              input_note: r.attachment_note ?? null,
             }));
           if (candidates.length === 0) {
             setRunError("Nothing to judge: every selected model failed or was skipped.");
           } else {
+            const runNote = buildRunAttachmentNote(results, attachments.length);
             const ev = await evaluateResponses(trimmed, candidates, failedAttempts, {
               include_synthesis: true,
               context: contextBlock,
+              run_attachment_note: runNote ?? undefined,
             });
             finalEvaluation = ev;
             setEvaluation(ev);
@@ -702,7 +769,7 @@ export default function App() {
         if (project) {
           await recordProjectRun(user.uid, project.id, {
             mode,
-            prompt: trimmed,
+            prompt: promptForMemory,
             selectedModels:
               mode === "pipeline"
                 ? [
@@ -721,13 +788,13 @@ export default function App() {
 
         // Legacy flat history (kept so existing users still see "Run history").
         const runData = {
-          prompt: trimmed,
+          prompt: promptForMemory,
           mode,
           outputs: finalOutputs,
           evaluation: finalEvaluation,
           pipelineResult: finalPipeline,
           summary: makeSummary({
-            prompt: trimmed,
+            prompt: promptForMemory,
             mode,
             outputs: finalOutputs,
             evaluation: finalEvaluation,
@@ -761,6 +828,7 @@ export default function App() {
     }
   }, [
     prompt,
+    attachments,
     selectedIds,
     mode,
     pipelineModels,
@@ -941,6 +1009,18 @@ export default function App() {
           className="w-full resize-y rounded-xl border border-zinc-700 bg-zinc-950/80 px-3 py-2.5 font-sans text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
         />
 
+        <div className="mt-4">
+          <p className="mb-2 text-sm font-medium text-zinc-300">Attachments</p>
+          <PromptAttachments
+            attachments={attachments}
+            onChange={setAttachments}
+            onError={setAttachmentError}
+          />
+          {attachmentError ? (
+            <p className="mt-2 text-sm text-amber-400/95">{attachmentError}</p>
+          ) : null}
+        </div>
+
         {/* Mode selector */}
         <div className="mt-6">
           <p className="mb-2 text-sm font-medium text-zinc-300">Mode</p>
@@ -1018,6 +1098,27 @@ export default function App() {
               Every step includes the original prompt. Verify is optional — if it fails, the
               final step continues with a caution note.
             </p>
+            {hasImageAttachments ? (
+              <div
+                className={`mt-3 rounded-lg border px-3 py-2 text-xs leading-relaxed ${
+                  draftSupportsVision
+                    ? "border-emerald-900/50 bg-emerald-950/25 text-emerald-200/90"
+                    : "border-amber-800/60 bg-amber-950/30 text-amber-200/95"
+                }`}
+              >
+                {draftSupportsVision ? (
+                  <>
+                    Image prompt detected. Draft uses a vision-capable model — images are passed
+                    to draft (and to verify when that model supports vision).
+                  </>
+                ) : (
+                  <>
+                    Image attachments require a vision-capable Draft model. Choose a model marked
+                    with vision support, or remove images to run the pipeline.
+                  </>
+                )}
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className="relative mt-6" ref={modelPickerRef}>
@@ -1032,9 +1133,24 @@ export default function App() {
                   {selectedModelInfos.map((m) => (
                     <span
                       key={m.model_id}
-                      className="inline-flex items-center gap-1 rounded-full border border-zinc-600 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100"
+                      className={`inline-flex items-center gap-1 rounded-full border bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100 ${
+                        hasImageAttachments && !m.supports_vision
+                          ? "border-amber-700/70 ring-1 ring-amber-600/25"
+                          : "border-zinc-600"
+                      }`}
                     >
                       {m.label}
+                      {hasImageAttachments ? (
+                        m.supports_vision ? (
+                          <span className="rounded bg-emerald-500/15 px-1.5 py-0 text-[10px] font-medium uppercase tracking-wide text-emerald-300/90">
+                            Vision
+                          </span>
+                        ) : (
+                          <span className="rounded bg-amber-500/15 px-1.5 py-0 text-[10px] font-medium uppercase tracking-wide text-amber-200/90">
+                            Text only
+                          </span>
+                        )
+                      ) : null}
                       <button
                         type="button"
                         aria-label={`Remove ${m.label}`}
@@ -1075,6 +1191,15 @@ export default function App() {
                             />
                             <span className="font-medium text-zinc-200">{m.label}</span>
                             <span className="text-xs text-zinc-600">{m.provider}</span>
+                            {hasImageAttachments && m.available ? (
+                              m.supports_vision ? (
+                                <span className="text-[10px] text-emerald-500/90">Vision</span>
+                              ) : (
+                                <span className="text-[10px] text-amber-500/90">
+                                  Images not supported
+                                </span>
+                              )
+                            ) : null}
                             {!m.available && m.unavailable_reason ? (
                               <span className="text-xs text-amber-500">({m.unavailable_reason})</span>
                             ) : null}
@@ -1095,8 +1220,11 @@ export default function App() {
             onClick={() => void run()}
             disabled={
               loading ||
-              !prompt.trim() ||
+              (!prompt.trim() && attachments.length === 0) ||
               !anyConfigured ||
+              (mode === "pipeline" &&
+                hasImageAttachments &&
+                !draftSupportsVision) ||
               (mode === "pipeline"
                 ? !pipelineModels.draft ||
                   !pipelineModels.critic ||
@@ -1172,6 +1300,14 @@ export default function App() {
               Generated sequentially from draft, critique, improvement, verification notes,
               and final pass.
             </p>
+            {pipelineResult.trace.some((s) =>
+              (s.attachment_note ?? "").includes("Images used"),
+            ) ? (
+              <p className="mb-3 text-xs text-teal-300/85">
+                Draft (and verify when vision-capable) received your image attachments; later steps
+                primarily use text from prior stages.
+              </p>
+            ) : null}
             <div className="rounded-lg border border-slate-800/80 bg-slate-950/50 px-4 py-4">
               <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">
                 {pipelineResult.final_answer ??
@@ -1201,6 +1337,12 @@ export default function App() {
               <code className="font-mono text-amber-100/90">{evaluation.judge_model_id}</code>
               {" — "}subjective rubric; no web access.
             </p>
+            {hasImageAttachments ? (
+              <p className="mb-3 rounded-lg border border-amber-800/40 bg-slate-950/50 px-3 py-2 text-xs text-amber-200/85">
+                Images were attached. Models marked “Text only” did not receive pixels and were
+                skipped by default. Scores treat unequal inputs as described in the judge prompt.
+              </p>
+            ) : null}
             {evaluation.excluded_failed_summary.length > 0 ? (
               <div className="mb-4 rounded-lg border border-amber-800/30 bg-slate-950/40 px-3 py-2">
                 <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
@@ -1294,6 +1436,18 @@ export default function App() {
                 Combined from successful model outputs only. Use this as your primary answer;
                 check individual cards if models disagreed.
               </p>
+              {hasImageAttachments && outputs ? (
+                <p className="mb-3 text-xs text-teal-300/80">
+                  {outputs.some(
+                    (o) =>
+                      !o.skipped &&
+                      !o.error &&
+                      (o.attachment_note ?? "").startsWith("Images used"),
+                  )
+                    ? "Final answer reflects models that processed your attachments where noted on each card."
+                    : "No scored model processed images — synthesis may be text-only relative to your attachments."}
+                </p>
+              ) : null}
               <div className="rounded-lg border border-slate-800/80 bg-slate-950/50 px-4 py-4">
                 <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">
                   {evaluation.final_synthesis}

@@ -10,12 +10,22 @@ import type { ContextBlock, ContextMessage } from "./firestore/types";
 
 export type { ContextBlock, ContextMessage };
 
+export type ImagePayload = {
+  file_name: string;
+  mime_type: string;
+  base64: string;
+};
+
 export type ModelInfo = {
   model_id: string;
   provider: string;
   label: string;
   available: boolean;
   unavailable_reason: string | null;
+  supports_vision: boolean;
+  supported_input_types: string[];
+  max_images: number;
+  image_notes: string | null;
 };
 
 export type ModelOutput = {
@@ -27,18 +37,37 @@ export type ModelOutput = {
   skipped: boolean;
   skip_reason: string | null;
   latency_ms?: number | null;
+  attachment_note?: string | null;
 };
 
 export async function fetchModels(): Promise<ModelInfo[]> {
   const res = await fetch(apiUrl("/api/models"));
   if (!res.ok) throw new Error(`Models request failed: ${res.status}`);
-  return res.json();
+  const raw: unknown[] = await res.json();
+  return raw.map((row) => {
+    const m = row as Record<string, unknown>;
+    return {
+      model_id: String(m.model_id ?? ""),
+      provider: String(m.provider ?? ""),
+      label: String(m.label ?? ""),
+      available: Boolean(m.available),
+      unavailable_reason:
+        m.unavailable_reason == null ? null : String(m.unavailable_reason),
+      supports_vision: Boolean(m.supports_vision),
+      supported_input_types: Array.isArray(m.supported_input_types)
+        ? (m.supported_input_types as string[])
+        : ["text"],
+      max_images: typeof m.max_images === "number" ? m.max_images : 0,
+      image_notes: m.image_notes == null ? null : String(m.image_notes),
+    } satisfies ModelInfo;
+  });
 }
 
 export async function generateParallel(
   prompt: string,
   modelIds: string[],
   context?: ContextBlock | null,
+  images?: ImagePayload[] | null,
 ): Promise<ModelOutput[]> {
   const res = await fetch(apiUrl("/api/generate"), {
     method: "POST",
@@ -47,6 +76,7 @@ export async function generateParallel(
       prompt,
       model_ids: modelIds,
       ...(context ? { context } : {}),
+      ...(images && images.length > 0 ? { images } : {}),
     }),
   });
   if (!res.ok) {
@@ -99,6 +129,7 @@ export type PipelineStepResult = {
   skipped: boolean;
   skip_reason: string | null;
   latency_ms: number | null;
+  attachment_note?: string | null;
 };
 
 export type PipelineResult = {
@@ -114,9 +145,14 @@ export async function evaluateResponses(
     label: string;
     content: string;
     latency_ms?: number | null;
+    input_note?: string | null;
   }[],
   failedAttempts: FailedAttempt[],
-  options?: { include_synthesis?: boolean; context?: ContextBlock | null },
+  options?: {
+    include_synthesis?: boolean;
+    context?: ContextBlock | null;
+    run_attachment_note?: string | null;
+  },
 ): Promise<EvaluationResult> {
   const res = await fetch(apiUrl("/api/evaluate"), {
     method: "POST",
@@ -127,6 +163,9 @@ export async function evaluateResponses(
       failed_attempts: failedAttempts,
       include_synthesis: options?.include_synthesis ?? true,
       ...(options?.context ? { context: options.context } : {}),
+      ...(options?.run_attachment_note
+        ? { run_attachment_note: options.run_attachment_note }
+        : {}),
     }),
   });
   if (!res.ok) {
@@ -146,6 +185,7 @@ export async function runPipeline(
     final_model_id: string;
   },
   context?: ContextBlock | null,
+  images?: ImagePayload[] | null,
 ): Promise<PipelineResult> {
   const res = await fetch(apiUrl("/api/pipeline"), {
     method: "POST",
@@ -154,6 +194,7 @@ export async function runPipeline(
       prompt,
       ...modelIds,
       ...(context ? { context } : {}),
+      ...(images && images.length > 0 ? { images } : {}),
     }),
   });
   if (!res.ok) {

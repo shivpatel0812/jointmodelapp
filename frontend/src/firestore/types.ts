@@ -32,6 +32,13 @@ export type Chat = {
   updatedAt: Timestamp | null;
 };
 
+/** Stored with chat messages — no raw image bytes (TODO: Firebase Storage URLs). */
+export type AttachmentMeta = {
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+};
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -42,6 +49,7 @@ export type ChatMessage = {
   latencyMs: number | null;
   tokenCount: number | null;
   costEstimate: number | null;
+  attachments?: AttachmentMeta[] | null;
 };
 
 export type ContextMessage = {

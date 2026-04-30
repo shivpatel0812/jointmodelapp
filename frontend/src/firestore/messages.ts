@@ -20,6 +20,8 @@ export type SaveMessageInput = {
   latencyMs?: number | null;
   tokenCount?: number | null;
   costEstimate?: number | null;
+  /** Metadata only — never base64 image payloads. */
+  attachments?: { fileName: string; mimeType: string; sizeBytes: number }[] | null;
 };
 
 function truncate(s: string, max: number): string {
@@ -42,6 +44,7 @@ export async function saveMessage(
       latencyMs: msg.latencyMs ?? null,
       tokenCount: msg.tokenCount ?? null,
       costEstimate: msg.costEstimate ?? null,
+      attachments: msg.attachments?.length ? msg.attachments : null,
       createdAt: Timestamp.now(),
     },
   );
@@ -71,6 +74,9 @@ export async function loadMessages(
       latencyMs: (v.latencyMs as number | null | undefined) ?? null,
       tokenCount: (v.tokenCount as number | null | undefined) ?? null,
       costEstimate: (v.costEstimate as number | null | undefined) ?? null,
+      attachments: Array.isArray(v.attachments)
+        ? (v.attachments as ChatMessage["attachments"])
+        : null,
     } satisfies ChatMessage;
   });
 }
@@ -102,6 +108,9 @@ export async function loadRecentMessages(
       latencyMs: (v.latencyMs as number | null | undefined) ?? null,
       tokenCount: (v.tokenCount as number | null | undefined) ?? null,
       costEstimate: (v.costEstimate as number | null | undefined) ?? null,
+      attachments: Array.isArray(v.attachments)
+        ? (v.attachments as ChatMessage["attachments"])
+        : null,
     } satisfies ChatMessage;
   });
   return arr.reverse();
