@@ -778,13 +778,13 @@ export default function App() {
         className={
           user && !authLoading
             ? "flex min-h-0 flex-1 flex-col overflow-y-auto"
-            : "mx-auto w-full max-w-5xl px-4 pb-20 pt-10 sm:px-8"
+            : "mx-auto w-full max-w-full px-4 pb-20 pt-10 sm:px-8 lg:max-w-6xl xl:max-w-7xl 2xl:max-w-[96rem]"
         }
       >
       <div
         className={
           user && !authLoading
-            ? "mx-auto w-full max-w-4xl px-6 pb-24 pt-6 sm:px-10"
+            ? "w-full min-w-0 px-4 pb-24 pt-4 sm:px-6 md:px-8 lg:px-10 xl:px-12 2xl:px-16"
             : ""
         }
       >

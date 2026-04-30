@@ -419,7 +419,7 @@ export function SynthesisResultsDashboard({
       </article>
 
       {/* 3 — Leaderboard */}
-      <article className="rounded-2xl border border-zinc-800 bg-zinc-950/35 p-5 shadow-lg shadow-black/20">
+      <article className="rounded-xl border border-zinc-800/50 bg-zinc-950/25 p-4 shadow-md shadow-black/10 sm:p-5 xl:p-6">
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">3</span>
           <h2 className="text-lg font-semibold text-zinc-100">Model leaderboard</h2>
@@ -485,7 +485,7 @@ export function SynthesisResultsDashboard({
       </article>
 
       {/* 4 — Agreement */}
-      <article className="rounded-2xl border border-zinc-800 bg-zinc-950/35 p-5 shadow-lg shadow-black/20">
+      <article className="rounded-xl border border-zinc-800/50 bg-zinc-950/25 p-4 shadow-md shadow-black/10 sm:p-5 xl:p-6">
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">4</span>
           <h2 className="text-lg font-semibold text-zinc-100">Model agreement & differences</h2>
@@ -523,7 +523,7 @@ export function SynthesisResultsDashboard({
       </article>
 
       {/* 5 — Individual responses */}
-      <article className="rounded-2xl border border-zinc-800 bg-zinc-950/35 p-5 shadow-lg shadow-black/20">
+      <article className="rounded-xl border border-zinc-800/50 bg-zinc-950/25 p-4 shadow-md shadow-black/10 sm:p-5 xl:p-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold uppercase tracking-wider text-zinc-500">5</span>
@@ -531,7 +531,7 @@ export function SynthesisResultsDashboard({
           </div>
           <span className="text-xs text-zinc-500">Collapsed — expand a card for full text</span>
         </div>
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {outputs.map((row) => {
             const sc = evaluation.scores[row.model_id];
             const notes = perNotes[row.model_id];
@@ -705,9 +705,9 @@ export function CompareRunResultsDashboard({
         ) : null}
       </div>
 
-      <article className="rounded-2xl border border-zinc-800 bg-zinc-950/35 p-5 shadow-lg shadow-black/20">
+      <article className="rounded-xl border border-zinc-800/50 bg-zinc-950/25 p-4 shadow-md shadow-black/10 sm:p-5 xl:p-6">
         <h2 className="mb-4 text-lg font-semibold text-zinc-100">Model responses</h2>
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {outputs.map((row) => {
             const info = metaFor(models, row.model_id);
             return (
