@@ -193,12 +193,20 @@ class PipelineResult(BaseModel):
 
 app = FastAPI(title="Joint Model API", version="0.1.0")
 
+_cors_extra = [
+    o.strip()
+    for o in os.getenv("CORS_ORIGINS", "").split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        *_cors_extra,
     ],
+    # Preview + production Vercel hosts when the frontend calls Railway with VITE_API_BASE_URL
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

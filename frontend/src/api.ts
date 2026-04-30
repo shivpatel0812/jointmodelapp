@@ -1,3 +1,11 @@
+/** Set on Vercel to your Railway API origin, e.g. `https://xxx.up.railway.app` (no trailing slash). Leave unset to use same-origin `/api` (Vite proxy locally, vercel.json rewrite in prod). */
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+
+function apiUrl(path: string): string {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return API_BASE ? `${API_BASE}${p}` : p;
+}
+
 export type ModelInfo = {
   model_id: string;
   provider: string;
@@ -18,7 +26,7 @@ export type ModelOutput = {
 };
 
 export async function fetchModels(): Promise<ModelInfo[]> {
-  const res = await fetch("/api/models");
+  const res = await fetch(apiUrl("/api/models"));
   if (!res.ok) throw new Error(`Models request failed: ${res.status}`);
   return res.json();
 }
@@ -27,7 +35,7 @@ export async function generateParallel(
   prompt: string,
   modelIds: string[],
 ): Promise<ModelOutput[]> {
-  const res = await fetch("/api/generate", {
+  const res = await fetch(apiUrl("/api/generate"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -104,7 +112,7 @@ export async function evaluateResponses(
   failedAttempts: FailedAttempt[],
   options?: { include_synthesis?: boolean },
 ): Promise<EvaluationResult> {
-  const res = await fetch("/api/evaluate", {
+  const res = await fetch(apiUrl("/api/evaluate"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -131,7 +139,7 @@ export async function runPipeline(
     final_model_id: string;
   },
 ): Promise<PipelineResult> {
-  const res = await fetch("/api/pipeline", {
+  const res = await fetch(apiUrl("/api/pipeline"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt, ...modelIds }),
