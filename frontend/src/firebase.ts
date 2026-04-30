@@ -2,10 +2,12 @@ import { initializeApp } from "firebase/app";
 import {
   GoogleAuthProvider,
   browserLocalPersistence,
+  browserPopupRedirectResolver,
   getAuth,
   getRedirectResult,
   indexedDBLocalPersistence,
   initializeAuth,
+  setPersistence,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
@@ -21,14 +23,23 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 
-/** Prefer IndexedDB with localStorage fallback (helps when IDB is blocked). */
+/**
+ * Use initializeAuth so we can pin persistence + the redirect resolver. Without
+ * an explicit popupRedirectResolver, signInWithRedirect / getRedirectResult
+ * throw `auth/argument-error`.
+ */
 let auth: ReturnType<typeof getAuth>;
 try {
   auth = initializeAuth(app, {
     persistence: [indexedDBLocalPersistence, browserLocalPersistence],
+    popupRedirectResolver: browserPopupRedirectResolver,
   });
 } catch {
+  // initializeAuth can only be called once per app; fall back if it was already initialized.
   auth = getAuth(app);
+  void setPersistence(auth, browserLocalPersistence).catch(() => {
+    /* leave default */
+  });
 }
 
 /**
@@ -39,7 +50,7 @@ let redirectResultPromise: ReturnType<typeof getRedirectResult> | null = null;
 
 export function finalizeRedirectSignIn() {
   if (!redirectResultPromise) {
-    redirectResultPromise = getRedirectResult(auth);
+    redirectResultPromise = getRedirectResult(auth, browserPopupRedirectResolver);
   }
   return redirectResultPromise;
 }

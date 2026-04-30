@@ -1,4 +1,11 @@
-import { type User, onAuthStateChanged, signInWithRedirect, signOut } from "firebase/auth";
+import {
+  type User,
+  browserPopupRedirectResolver,
+  onAuthStateChanged,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+} from "firebase/auth";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   evaluateResponses,
@@ -458,12 +465,33 @@ export default function App() {
   const handleSignIn = useCallback(async () => {
     setAuthError(null);
     setSigningIn(true);
+    // Try popup first — works reliably when third-party cookies (used by redirect flow) are blocked.
+    // COOP "window.closed" warnings are harmless; sign-in still completes.
     try {
-      await signInWithRedirect(auth, googleProvider);
-      // Page navigates to Google; on return, getRedirectResult + onAuthStateChanged complete sign-in.
-    } catch (e: unknown) {
+      await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
       setSigningIn(false);
-      setAuthError(e instanceof Error ? e.message : String(e));
+      return;
+    } catch (e: unknown) {
+      const code =
+        e && typeof e === "object" && "code" in e ? String((e as { code: string }).code) : "";
+      // Popup closed by user — leave UI alone, no error.
+      if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+        setSigningIn(false);
+        return;
+      }
+      // If popup is blocked, fall back to redirect.
+      if (code === "auth/popup-blocked" || code === "auth/operation-not-supported-in-this-environment") {
+        try {
+          await signInWithRedirect(auth, googleProvider, browserPopupRedirectResolver);
+          return;
+        } catch (e2: unknown) {
+          setSigningIn(false);
+          setAuthError(describeAuthRedirectError(e2));
+          return;
+        }
+      }
+      setSigningIn(false);
+      setAuthError(describeAuthRedirectError(e));
     }
   }, []);
 
