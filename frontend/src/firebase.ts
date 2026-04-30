@@ -1,4 +1,5 @@
-import { initializeApp } from "firebase/app";
+import { initializeApp, type FirebaseOptions } from "firebase/app";
+import { getAnalytics, isSupported, type Analytics } from "firebase/analytics";
 import {
   GoogleAuthProvider,
   browserLocalPersistence,
@@ -11,23 +12,39 @@ import {
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
-/** Prefer `VITE_FIREBASE_*` from `.env.local` / Vercel; fall back to the bundled project defaults. */
-function env(name: keyof ImportMetaEnv, fallback: string): string {
+function requireEnv(name: keyof ImportMetaEnv): string {
   const v = import.meta.env[name];
-  return typeof v === "string" && v.trim().length > 0 ? v.trim() : fallback;
+  if (typeof v === "string" && v.trim().length > 0) return v.trim();
+  throw new Error(
+    `Missing ${String(name)}. Copy frontend/.env.example → frontend/.env.local and add your Firebase web app values (Console → Project settings → Your apps).`,
+  );
 }
 
-const firebaseConfig = {
-  apiKey: env("VITE_FIREBASE_API_KEY", "AIzaSyDWhWRlRlsYxi6rl4_0s33_XVJFmDCKDmw"),
-  authDomain: env("VITE_FIREBASE_AUTH_DOMAIN", "jointmodelapp.firebaseapp.com"),
-  projectId: env("VITE_FIREBASE_PROJECT_ID", "jointmodelapp"),
-  storageBucket: env("VITE_FIREBASE_STORAGE_BUCKET", "jointmodelapp.firebasestorage.app"),
-  messagingSenderId: env("VITE_FIREBASE_MESSAGING_SENDER_ID", "918256895528"),
-  appId: env("VITE_FIREBASE_APP_ID", "1:918256895528:web:4a8432036dbeea69eed71d"),
-  measurementId: env("VITE_FIREBASE_MEASUREMENT_ID", "G-NXEK7JTCYT"),
+function optionalEnv(name: keyof ImportMetaEnv): string | undefined {
+  const v = import.meta.env[name];
+  return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+}
+
+const firebaseConfig: FirebaseOptions = {
+  apiKey: requireEnv("VITE_FIREBASE_API_KEY"),
+  authDomain: requireEnv("VITE_FIREBASE_AUTH_DOMAIN"),
+  projectId: requireEnv("VITE_FIREBASE_PROJECT_ID"),
+  storageBucket: requireEnv("VITE_FIREBASE_STORAGE_BUCKET"),
+  messagingSenderId: requireEnv("VITE_FIREBASE_MESSAGING_SENDER_ID"),
+  appId: requireEnv("VITE_FIREBASE_APP_ID"),
 };
+const measurementId = optionalEnv("VITE_FIREBASE_MEASUREMENT_ID");
+if (measurementId) {
+  firebaseConfig.measurementId = measurementId;
+}
 
 const app = initializeApp(firebaseConfig);
+
+/** Analytics only when `measurementId` is set and the browser supports it. */
+export const analyticsPromise: Promise<Analytics | null> =
+  measurementId != null
+    ? isSupported().then((ok) => (ok ? getAnalytics(app) : null))
+    : Promise.resolve(null);
 
 /**
  * Use initializeAuth so we can pin persistence + the redirect resolver. Without
