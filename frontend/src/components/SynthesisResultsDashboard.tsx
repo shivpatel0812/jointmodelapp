@@ -137,6 +137,7 @@ export function SynthesisResultsDashboard({
   hasImageAttachments,
   projectSelected,
   userSignedIn,
+  onContinueFromResponse,
 }: {
   outputs: ModelOutput[];
   evaluation: EvaluationResult;
@@ -144,6 +145,11 @@ export function SynthesisResultsDashboard({
   hasImageAttachments: boolean;
   projectSelected: boolean;
   userSignedIn: boolean;
+  /**
+   * Open the branch-chat modal for a successful response. When omitted (e.g.
+   * signed-out demo), the per-card button is hidden.
+   */
+  onContinueFromResponse?: (output: ModelOutput) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
@@ -601,8 +607,22 @@ export function SynthesisResultsDashboard({
                   ) : (
                     <p className="text-sm text-zinc-500">No content.</p>
                   )}
-                  <div className="mt-2 flex flex-wrap gap-2 border-t border-zinc-800/80 pt-2 text-[11px] text-zinc-500">
+                  <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800/80 pt-2 text-[11px] text-zinc-500">
                     <span>{row.attachment_note ?? (row.skipped || row.error ? "" : "Text only")}</span>
+                    {onContinueFromResponse && !row.skipped && !row.error && row.content ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onContinueFromResponse(row);
+                        }}
+                        className="ml-auto rounded-md border border-zinc-700/80 bg-zinc-950/60 px-2 py-1 text-[11px] font-medium text-zinc-300 transition hover:border-blue-500/60 hover:bg-blue-950/40 hover:text-blue-100"
+                        title="Create a new branch chat seeded with this response."
+                      >
+                        ↳ Continue from this response
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </details>
@@ -681,10 +701,12 @@ export function CompareRunResultsDashboard({
   outputs,
   models,
   hasImageAttachments,
+  onContinueFromResponse,
 }: {
   outputs: ModelOutput[];
   models: ModelInfo[];
   hasImageAttachments: boolean;
+  onContinueFromResponse?: (output: ModelOutput) => void;
 }) {
   const successful = outputs.filter((o) => !o.error && !o.skipped).length;
   const prob = outputs.length - successful;
@@ -756,6 +778,22 @@ export function CompareRunResultsDashboard({
                   ) : (
                     <p className="text-sm text-zinc-500">No content.</p>
                   )}
+                  {onContinueFromResponse && !row.skipped && !row.error && row.content ? (
+                    <div className="mt-2 flex justify-end border-t border-zinc-800/80 pt-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onContinueFromResponse(row);
+                        }}
+                        className="rounded-md border border-zinc-700/80 bg-zinc-950/60 px-2 py-1 text-[11px] font-medium text-zinc-300 transition hover:border-blue-500/60 hover:bg-blue-950/40 hover:text-blue-100"
+                        title="Create a new branch chat seeded with this response."
+                      >
+                        ↳ Continue from this response
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               </details>
             );

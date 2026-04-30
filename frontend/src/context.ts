@@ -3,6 +3,9 @@ import { loadRecentMessages } from "./firestore/messages";
 import { getProject } from "./firestore/projects";
 import { getUserSettings } from "./firestore/settings";
 import type {
+  BranchContextBlock,
+  BranchSource,
+  Chat,
   ChatMessage,
   ContextBlock,
   ContextMessage,
@@ -24,6 +27,63 @@ function toContextMessage(m: ChatMessage): ContextMessage {
     role: m.role,
     content: truncate(m.content, PER_MESSAGE_CHARS) ?? "",
     model_id: m.modelId ?? null,
+  };
+}
+
+/** Skip the seed branch-context system message; it's redundant with branch_context. */
+function isBranchSeedMessage(m: ChatMessage): boolean {
+  return m.role === "system" && m.mode === ("branch_context" as ChatMessage["mode"]);
+}
+
+const BRANCH_FIELD_LIMIT = 6_000;
+const BRANCH_SIBLING_LIMIT = 5;
+const BRANCH_SIBLING_CHARS = 1_500;
+const BRANCH_PIPELINE_LIMIT = 1_800;
+
+/**
+ * Compress a stored `BranchSource` into the `BranchContextBlock` shape sent
+ * to the backend. We keep the wire payload small because every prompt in a
+ * branch chat carries it.
+ */
+function buildBranchContextBlock(
+  source: BranchSource,
+  parentChatSummary: string | null,
+): BranchContextBlock {
+  const siblings =
+    source.siblingResponses
+      ?.slice(0, BRANCH_SIBLING_LIMIT)
+      .map((s) => ({
+        model_label: s.modelLabel,
+        response: truncate(s.response, BRANCH_SIBLING_CHARS) ?? "",
+      }))
+      .filter((s) => s.response.length > 0) ?? [];
+
+  let pipelineSummary: string | null = null;
+  if (source.pipelineTrace) {
+    const lines = [
+      `status: ${source.pipelineTrace.status}`,
+      ...source.pipelineTrace.steps.map((s) => {
+        const label = s.modelLabel ? ` (${s.modelLabel})` : "";
+        return `- ${s.step}${label}: ${s.summary ?? "(no summary)"}`;
+      }),
+      source.pipelineTrace.finalAnswer
+        ? `final answer: ${source.pipelineTrace.finalAnswer}`
+        : "",
+    ].filter(Boolean);
+    pipelineSummary = truncate(lines.join("\n"), BRANCH_PIPELINE_LIMIT);
+  }
+
+  return {
+    source_model_label: source.sourceModelLabel,
+    source_model_id: source.sourceModelId,
+    source_chat_id: source.sourceChatId,
+    parent_chat_summary: truncate(parentChatSummary, 4_000),
+    original_prompt: truncate(source.originalPrompt, BRANCH_FIELD_LIMIT) ?? "",
+    selected_response: truncate(source.selectedResponse, BRANCH_FIELD_LIMIT) ?? "",
+    sibling_responses: siblings.length > 0 ? siblings : undefined,
+    judge_summary: truncate(source.judgeSummary ?? null, 4_000),
+    final_synthesis: truncate(source.finalSynthesis ?? null, BRANCH_FIELD_LIMIT),
+    pipeline_trace_summary: pipelineSummary,
   };
 }
 
@@ -55,7 +115,25 @@ export async function buildContextForPrompt(
     getUserSettings(uid).catch((): UserSettings => ({})),
   ]);
 
-  const recent_messages = recent.map(toContextMessage);
+  const recent_messages = recent
+    .filter((m) => !isBranchSeedMessage(m))
+    .map(toContextMessage);
+
+  // Pull the parent chat summary for branch chats so the model can see the
+  // arc of the original conversation, not just the selected response.
+  let branchContextBlock: BranchContextBlock | null = null;
+  if (chat?.isBranch && chat.branchSource) {
+    let parentSummary: string | null = null;
+    if (chat.parentChatId) {
+      try {
+        const parent: Chat | null = await getChat(uid, chat.parentChatId);
+        parentSummary = parent?.summary ?? null;
+      } catch {
+        parentSummary = null;
+      }
+    }
+    branchContextBlock = buildBranchContextBlock(chat.branchSource, parentSummary);
+  }
 
   const context: ContextBlock = {
     project_title: project?.title?.trim() || null,
@@ -65,6 +143,7 @@ export async function buildContextForPrompt(
     project_decisions: (project?.decisions ?? []).slice(0, 12),
     open_questions: (project?.openQuestions ?? []).slice(0, 8),
     user_preferences: truncate(settings.preferences ?? null, 1_500),
+    branch_context: branchContextBlock,
   };
 
   const hasContent = Boolean(
@@ -73,7 +152,8 @@ export async function buildContextForPrompt(
       context.recent_messages.length > 0 ||
       context.project_decisions.length > 0 ||
       context.open_questions.length > 0 ||
-      context.user_preferences,
+      context.user_preferences ||
+      context.branch_context,
   );
 
   return { context, hasContent };

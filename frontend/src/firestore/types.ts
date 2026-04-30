@@ -23,6 +23,43 @@ export type Project = {
   updatedAt: Timestamp | null;
 };
 
+/** Sibling response captured at branch creation time (compact copy). */
+export type BranchSourceSibling = {
+  modelId: string;
+  modelLabel: string;
+  provider?: string | null;
+  response: string;
+};
+
+/**
+ * Snapshot of the slice of a parent run that seeds a branch chat.
+ *
+ * Stored on `Chat` when the chat was created via "Continue from this response".
+ * TODO(memory): once `sourceRunId` is reliably linked, lazy-load full pipeline
+ * trace / sibling responses instead of storing compact copies here.
+ */
+export type BranchSource = {
+  type: "model_response";
+  sourceChatId: string;
+  sourceRunId?: string | null;
+  sourceMessageId?: string | null;
+  sourceModelId: string;
+  sourceModelLabel: string;
+  sourceProvider?: string | null;
+  originalPrompt: string;
+  selectedResponse: string;
+  siblingResponses: BranchSourceSibling[];
+  judgeSummary?: string | null;
+  finalSynthesis?: string | null;
+  /** Compact pipeline trace (status + final answer + step labels). */
+  pipelineTrace?: {
+    status: string;
+    finalAnswer?: string | null;
+    steps: { step: string; modelLabel?: string | null; summary?: string | null }[];
+  } | null;
+  createdAt: Timestamp | null;
+};
+
 export type Chat = {
   id: string;
   projectId: string | null;
@@ -30,6 +67,10 @@ export type Chat = {
   summary: string;
   createdAt: Timestamp | null;
   updatedAt: Timestamp | null;
+  /** Optional: present when this chat was created via "Continue from response". */
+  parentChatId?: string | null;
+  isBranch?: boolean;
+  branchSource?: BranchSource | null;
 };
 
 /** Stored with chat messages — no raw image bytes (TODO: Firebase Storage URLs). */
@@ -39,23 +80,42 @@ export type AttachmentMeta = {
   sizeBytes: number;
 };
 
+/** Extra system-message modes that don't represent a user-driven RunMode. */
+export type SystemMessageMode = "branch_context";
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   modelId: string | null;
-  mode: RunMode | null;
+  mode: RunMode | SystemMessageMode | null;
   createdAt: Timestamp | null;
   latencyMs: number | null;
   tokenCount: number | null;
   costEstimate: number | null;
   attachments?: AttachmentMeta[] | null;
+  /** Optional metadata (e.g. branch_context system message). */
+  metadata?: Record<string, unknown> | null;
 };
 
 export type ContextMessage = {
   role: "user" | "assistant" | "system";
   content: string;
   model_id: string | null;
+};
+
+/** Branch slice forwarded with the ContextBlock for branch chats. */
+export type BranchContextBlock = {
+  source_model_label: string;
+  source_model_id: string;
+  source_chat_id: string;
+  parent_chat_summary?: string | null;
+  original_prompt: string;
+  selected_response: string;
+  sibling_responses?: { model_label: string; response: string }[];
+  judge_summary?: string | null;
+  final_synthesis?: string | null;
+  pipeline_trace_summary?: string | null;
 };
 
 /**
@@ -74,6 +134,8 @@ export type ContextBlock = {
   project_decisions: string[];
   open_questions: string[];
   user_preferences: string | null;
+  /** Present when the active chat is a branch — backend prefixes prompts with this. */
+  branch_context?: BranchContextBlock | null;
 };
 
 export type StoredJudgeResult = {

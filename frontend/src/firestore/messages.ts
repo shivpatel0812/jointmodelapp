@@ -8,7 +8,7 @@ import {
   query,
 } from "firebase/firestore";
 import { db } from "../firebase";
-import type { ChatMessage, RunMode } from "./types";
+import type { ChatMessage, RunMode, SystemMessageMode } from "./types";
 
 const MAX_MESSAGE_CHARS = 12_000;
 
@@ -16,13 +16,19 @@ export type SaveMessageInput = {
   role: "user" | "assistant" | "system";
   content: string;
   modelId?: string | null;
-  mode?: RunMode | null;
+  /** Persists `RunMode` plus system-only modes like `branch_context`. */
+  mode?: RunMode | SystemMessageMode | null;
   latencyMs?: number | null;
   tokenCount?: number | null;
   costEstimate?: number | null;
   /** Metadata only — never base64 image payloads. */
   attachments?: { fileName: string; mimeType: string; sizeBytes: number }[] | null;
+  /** Optional structured metadata (e.g. branch source pointer). */
+  metadata?: Record<string, unknown> | null;
 };
+
+/** Used by ChatThread/ContextBuilder to filter out the seed system message. */
+export const BRANCH_CONTEXT_MODE = "branch_context" as const;
 
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
@@ -45,6 +51,7 @@ export async function saveMessage(
       tokenCount: msg.tokenCount ?? null,
       costEstimate: msg.costEstimate ?? null,
       attachments: msg.attachments?.length ? msg.attachments : null,
+      metadata: msg.metadata ?? null,
       createdAt: Timestamp.now(),
     },
   );
@@ -69,7 +76,7 @@ export async function loadMessages(
       role: (v.role as ChatMessage["role"]) ?? "assistant",
       content: String(v.content ?? ""),
       modelId: (v.modelId as string | null | undefined) ?? null,
-      mode: (v.mode as RunMode | null | undefined) ?? null,
+      mode: (v.mode as ChatMessage["mode"] | undefined) ?? null,
       createdAt: (v.createdAt as Timestamp | undefined) ?? null,
       latencyMs: (v.latencyMs as number | null | undefined) ?? null,
       tokenCount: (v.tokenCount as number | null | undefined) ?? null,
@@ -77,6 +84,10 @@ export async function loadMessages(
       attachments: Array.isArray(v.attachments)
         ? (v.attachments as ChatMessage["attachments"])
         : null,
+      metadata:
+        v.metadata && typeof v.metadata === "object"
+          ? (v.metadata as Record<string, unknown>)
+          : null,
     } satisfies ChatMessage;
   });
 }
@@ -103,7 +114,7 @@ export async function loadRecentMessages(
       role: (v.role as ChatMessage["role"]) ?? "assistant",
       content: String(v.content ?? ""),
       modelId: (v.modelId as string | null | undefined) ?? null,
-      mode: (v.mode as RunMode | null | undefined) ?? null,
+      mode: (v.mode as ChatMessage["mode"] | undefined) ?? null,
       createdAt: (v.createdAt as Timestamp | undefined) ?? null,
       latencyMs: (v.latencyMs as number | null | undefined) ?? null,
       tokenCount: (v.tokenCount as number | null | undefined) ?? null,
@@ -111,6 +122,10 @@ export async function loadRecentMessages(
       attachments: Array.isArray(v.attachments)
         ? (v.attachments as ChatMessage["attachments"])
         : null,
+      metadata:
+        v.metadata && typeof v.metadata === "object"
+          ? (v.metadata as Record<string, unknown>)
+          : null,
     } satisfies ChatMessage;
   });
   return arr.reverse();

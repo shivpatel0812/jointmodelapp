@@ -20,6 +20,8 @@ import {
   type PipelineStepResult,
 } from "./api";
 import { AppSidebar } from "./components/AppSidebar";
+import { BranchChatModal } from "./components/BranchChatModal";
+import { BranchContextCard } from "./components/BranchContextCard";
 import { ChatThread } from "./components/ChatThread";
 import { MarkdownContent } from "./components/MarkdownContent";
 import { PromptAttachments } from "./components/PromptAttachments";
@@ -34,8 +36,16 @@ import {
 } from "./promptAttachments";
 import { buildContextForPrompt } from "./context";
 import { type SavedRun, loadRecentRuns, makeSummary, saveRun } from "./db";
+import { createBranchChat, getChat, listChats } from "./firestore/chats";
 import { loadMessages } from "./firestore/messages";
-import type { Chat, ChatMessage, Project, RunMode } from "./firestore/types";
+import type {
+  BranchSource,
+  Chat,
+  ChatMessage,
+  Project,
+  RunMode,
+} from "./firestore/types";
+import { Timestamp } from "firebase/firestore";
 import { auth, finalizeRedirectSignIn, googleProvider } from "./firebase";
 import {
   recordCompareOutputs,
@@ -355,6 +365,14 @@ export default function App() {
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
+  /** Snapshot of the prompt used for the most recently displayed result set,
+   *  needed to seed `branchSource.originalPrompt` when creating a branch chat. */
+  const [lastRunPrompt, setLastRunPrompt] = useState<string>("");
+
+  /** Branch-chat modal state. */
+  const [branchTarget, setBranchTarget] = useState<ModelOutput | null>(null);
+  const [branchError, setBranchError] = useState<string | null>(null);
+
   useEffect(() => {
     setShowModelPicker(false);
   }, [mode]);
@@ -559,6 +577,7 @@ export default function App() {
     setEvaluation(null);
     setPipelineResult(null);
     setContextActive(false);
+    setLastRunPrompt(promptForMemory);
     let finalOutputs: ModelOutput[] | null = null;
     let finalEvaluation: EvaluationResult | null = null;
     let finalPipeline: PipelineResult | null = null;
@@ -741,6 +760,7 @@ export default function App() {
     setOutputs(run.outputs ?? null);
     setEvaluation(run.evaluation ?? null);
     setPipelineResult(run.pipelineResult ?? null);
+    setLastRunPrompt(run.prompt);
     setRunError(null);
     setSaveError(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -750,6 +770,205 @@ export default function App() {
 
   const breadcrumbProject = project?.title ?? "—";
   const breadcrumbChat = chat?.title ?? "New thread";
+
+  // -------------------------------------------------------------------------
+  // Branch chat — "Continue from this response"
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build a `BranchSource` snapshot from current run state seeded by the user's
+   * selection. Captures other successful sibling responses, judge summary, and
+   * pipeline trace so the branch chat stays usable even if the source run is
+   * later deleted.
+   *
+   * TODO(memory): once we reliably track `sourceRunId`, lazy-load full
+   * pipeline trace + sibling responses from the run rather than denormalizing.
+   */
+  const buildBranchSourceFromCurrentRun = useCallback(
+    (selected: ModelOutput): BranchSource | null => {
+      if (!chat) return null;
+      const originalPrompt = lastRunPrompt || prompt.trim() || "";
+      const responseText = (selected.content ?? "").trim();
+      if (!responseText) return null;
+
+      const siblings: BranchSource["siblingResponses"] = (outputs ?? [])
+        .filter(
+          (o) =>
+            !o.skipped &&
+            !o.error &&
+            !!o.content?.trim() &&
+            o.model_id !== selected.model_id,
+        )
+        .map((o) => ({
+          modelId: o.model_id,
+          modelLabel: o.label,
+          provider: o.provider,
+          response: (o.content ?? "").trim(),
+        }));
+
+      const judgeSummary = evaluation?.rationale?.trim() || null;
+      const finalSynthesis = evaluation?.final_synthesis?.trim() || null;
+
+      const pipelineTrace = pipelineResult
+        ? {
+            status: pipelineResult.status,
+            finalAnswer: pipelineResult.final_answer ?? null,
+            steps: (pipelineResult.trace ?? []).map((t) => ({
+              step: t.step,
+              modelLabel: t.label ?? null,
+              summary:
+                (t.content ?? t.error ?? t.skip_reason ?? "").trim().slice(0, 600) ||
+                null,
+            })),
+          }
+        : null;
+
+      return {
+        type: "model_response",
+        sourceChatId: chat.id,
+        sourceRunId: null,
+        sourceMessageId: null,
+        sourceModelId: selected.model_id,
+        sourceModelLabel: selected.label,
+        sourceProvider: selected.provider ?? null,
+        originalPrompt,
+        selectedResponse: responseText,
+        siblingResponses: siblings,
+        judgeSummary,
+        finalSynthesis,
+        pipelineTrace,
+        createdAt: Timestamp.now(),
+      };
+    },
+    [chat, lastRunPrompt, prompt, outputs, evaluation, pipelineResult],
+  );
+
+  const branchSourceForModal = useMemo(
+    () => (branchTarget ? buildBranchSourceFromCurrentRun(branchTarget) : null),
+    [branchTarget, buildBranchSourceFromCurrentRun],
+  );
+
+  const branchContextItems = useMemo(() => {
+    const src = branchSourceForModal;
+    return [
+      {
+        key: "originalPrompt",
+        label: "Original prompt",
+        available: !!src && !!src.originalPrompt,
+      },
+      {
+        key: "selectedResponse",
+        label: "Selected response",
+        available: !!src && !!src.selectedResponse,
+      },
+      {
+        key: "siblings",
+        label: "Other successful model responses",
+        available: !!src && (src.siblingResponses?.length ?? 0) > 0,
+        hint: src
+          ? `(${src.siblingResponses?.length ?? 0})`
+          : undefined,
+      },
+      {
+        key: "judge",
+        label: "Judge summary",
+        available: !!src?.judgeSummary,
+      },
+      {
+        key: "synthesis",
+        label: "Final synthesis",
+        available: !!src?.finalSynthesis,
+      },
+      {
+        key: "pipeline",
+        label: "Pipeline trace",
+        available: !!src?.pipelineTrace,
+      },
+    ];
+  }, [branchSourceForModal]);
+
+  const handleOpenBranchModal = useCallback(
+    (output: ModelOutput) => {
+      setBranchError(null);
+      if (!user) {
+        setBranchError("Sign in to create a branch chat.");
+        return;
+      }
+      if (!project) {
+        setBranchError("Select a project first — branch chats live under a project.");
+        return;
+      }
+      if (!chat) {
+        setBranchError("Open a chat first so we can branch from it.");
+        return;
+      }
+      if (!output.content?.trim()) {
+        setBranchError("That response has no content to branch from.");
+        return;
+      }
+      if (!(lastRunPrompt || prompt.trim())) {
+        setBranchError("Missing the original prompt for this run.");
+        return;
+      }
+      setBranchTarget(output);
+    },
+    [user, project, chat, lastRunPrompt, prompt],
+  );
+
+  const handleConfirmBranch = useCallback(
+    async (title: string) => {
+      if (!user || !project || !chat || !branchTarget) return;
+      const source = buildBranchSourceFromCurrentRun(branchTarget);
+      if (!source) {
+        setBranchError("Could not assemble branch context from this run.");
+        return;
+      }
+      try {
+        const newChatId = await createBranchChat({
+          uid: user.uid,
+          projectId: project.id,
+          parentChatId: chat.id,
+          title,
+          branchSource: source,
+        });
+        setBranchTarget(null);
+        setBranchError(null);
+        // Refresh sidebar list, then load + select the new branch chat.
+        try {
+          const refreshed = await listChats(user.uid, project.id);
+          const created =
+            refreshed.find((c) => c.id === newChatId) ??
+            (await getChat(user.uid, newChatId));
+          if (created) {
+            setChat(created);
+            setOutputs(null);
+            setEvaluation(null);
+            setPipelineResult(null);
+            setPrompt("");
+            setLastRunPrompt("");
+            setPcRefresh((n) => n + 1);
+          }
+        } catch {
+          // Sidebar refresh is best-effort.
+          setPcRefresh((n) => n + 1);
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setBranchError(`Could not create branch chat — ${msg}`);
+      }
+    },
+    [user, project, chat, branchTarget, buildBranchSourceFromCurrentRun],
+  );
+
+  const openParentChat = useCallback(async () => {
+    if (!user || !chat?.parentChatId) return;
+    try {
+      const parent = await getChat(user.uid, chat.parentChatId);
+      if (parent) setChat(parent);
+    } catch {
+      /* ignore */
+    }
+  }, [user, chat?.parentChatId]);
 
   return (
     <div
@@ -873,6 +1092,12 @@ export default function App() {
               <div className="mb-4 rounded-xl border border-red-900/40 bg-red-950/30 px-3 py-2 text-xs text-red-200">
                 {authError}
               </div>
+            ) : null}
+            {user && chat?.isBranch && chat.branchSource ? (
+              <BranchContextCard
+                source={chat.branchSource}
+                onOpenParent={chat.parentChatId ? () => void openParentChat() : undefined}
+              />
             ) : null}
             {user && chat ? (
               <details className="mb-4 rounded-lg border border-zinc-800/80 bg-zinc-950/40">
@@ -1251,13 +1476,51 @@ export default function App() {
           hasImageAttachments={hasImageAttachments}
           projectSelected={project !== null}
           userSignedIn={user !== null}
+          onContinueFromResponse={
+            user && project && chat ? handleOpenBranchModal : undefined
+          }
         />
       ) : outputs && outputs.length > 0 && !pipelineResult ? (
         <CompareRunResultsDashboard
           outputs={outputs}
           models={models}
           hasImageAttachments={hasImageAttachments}
+          onContinueFromResponse={
+            user && project && chat ? handleOpenBranchModal : undefined
+          }
         />
+      ) : null}
+
+      {/* Branch chat modal — global so it overlays the dashboard cleanly. */}
+      <BranchChatModal
+        open={!!branchTarget}
+        onClose={() => {
+          setBranchTarget(null);
+          setBranchError(null);
+        }}
+        onConfirm={handleConfirmBranch}
+        modelLabel={branchTarget?.label ?? ""}
+        provider={branchTarget?.provider ?? null}
+        responsePreview={branchTarget?.content ?? ""}
+        contextItems={branchContextItems}
+        error={branchError}
+      />
+
+      {/* Out-of-modal branch error (e.g. user clicked while not signed in). */}
+      {!branchTarget && branchError ? (
+        <div
+          role="alert"
+          className="fixed bottom-20 left-1/2 z-40 -translate-x-1/2 rounded-xl border border-red-900/50 bg-red-950/80 px-4 py-2 text-sm text-red-100 shadow-lg shadow-black/40"
+        >
+          {branchError}
+          <button
+            type="button"
+            onClick={() => setBranchError(null)}
+            className="ml-3 text-xs text-red-300 underline-offset-2 hover:underline"
+          >
+            dismiss
+          </button>
+        </div>
       ) : null}
 
       {/* History panel */}

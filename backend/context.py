@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Hard caps so the context block never blows past a model's input window or
 # starts dominating the user's actual prompt.
@@ -30,11 +30,50 @@ _MAX_DECISIONS = 8
 _MAX_OPEN_QUESTIONS = 6
 _MAX_PREFERENCES_CHARS = 600
 
+# Branch-context caps. Pipeline trace summary can be moderately long because
+# it already comes pre-summarized from the client.
+_MAX_BRANCH_FIELD_CHARS = 6_000
+_MAX_BRANCH_SIBLING_CHARS = 1_500
+_MAX_BRANCH_SIBLINGS = 5
+_MAX_BRANCH_PIPELINE_CHARS = 1_800
+
 
 class ContextMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str = Field(..., min_length=1, max_length=20_000)
     model_id: str | None = Field(default=None, max_length=256)
+
+
+class BranchSiblingResponse(BaseModel):
+    # Disable Pydantic's "model_" protected namespace so we can keep the wire
+    # field names symmetric with the frontend (model_label / model_id).
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_label: str = Field(..., max_length=240)
+    response: str = Field(..., max_length=20_000)
+
+
+class BranchContextBlock(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    """Compact slice describing the parent run a branch chat was forked from.
+
+    Sent only when the active chat is a branch chat. Backend formats it into a
+    BRANCH CONTEXT section in front of the regular prompt prefix so models can
+    see what response is being continued.
+    """
+
+    source_model_label: str = Field(..., max_length=240)
+    source_model_id: str = Field(..., max_length=240)
+    source_chat_id: str = Field(..., max_length=240)
+    parent_chat_summary: str | None = Field(default=None, max_length=8_000)
+    original_prompt: str = Field(..., max_length=20_000)
+    selected_response: str = Field(..., max_length=20_000)
+    sibling_responses: list[BranchSiblingResponse] | None = Field(
+        default=None, max_length=12
+    )
+    judge_summary: str | None = Field(default=None, max_length=8_000)
+    final_synthesis: str | None = Field(default=None, max_length=20_000)
+    pipeline_trace_summary: str | None = Field(default=None, max_length=8_000)
 
 
 class ContextBlock(BaseModel):
@@ -47,6 +86,7 @@ class ContextBlock(BaseModel):
     project_decisions: list[str] = Field(default_factory=list, max_length=24)
     open_questions: list[str] = Field(default_factory=list, max_length=24)
     user_preferences: str | None = Field(default=None, max_length=2_000)
+    branch_context: BranchContextBlock | None = Field(default=None)
 
 
 def _truncate(text: str | None, limit: int) -> str | None:
@@ -89,6 +129,10 @@ def format_context_block(ctx: ContextBlock | None) -> str:
 
     sections: list[str] = []
 
+    branch = _format_branch_context(ctx.branch_context)
+    if branch:
+        sections.append(branch)
+
     project_summary = _truncate(ctx.project_summary, _MAX_SUMMARY_CHARS)
     if project_summary or ctx.project_title:
         head = f"PROJECT CONTEXT{f' — {ctx.project_title.strip()}' if ctx.project_title else ''}:"
@@ -118,6 +162,52 @@ def format_context_block(ctx: ContextBlock | None) -> str:
         sections.append("USER PREFERENCES:\n" + prefs)
 
     return "\n\n".join(sections)
+
+
+def _format_branch_context(branch: BranchContextBlock | None) -> str:
+    """Render the branch slice. Comes first so models read it before normal context."""
+    if branch is None:
+        return ""
+
+    parts: list[str] = []
+    parts.append(
+        "BRANCH CONTEXT:\n"
+        f"This chat continues from {branch.source_model_label} "
+        f"(model_id={branch.source_model_id}) in source chat {branch.source_chat_id}."
+    )
+
+    parent_summary = _truncate(branch.parent_chat_summary, _MAX_SUMMARY_CHARS)
+    if parent_summary:
+        parts.append("PARENT CHAT SUMMARY:\n" + parent_summary)
+
+    original_prompt = _truncate(branch.original_prompt, _MAX_BRANCH_FIELD_CHARS) or ""
+    parts.append("ORIGINAL PROMPT:\n" + original_prompt)
+
+    selected = _truncate(branch.selected_response, _MAX_BRANCH_FIELD_CHARS) or ""
+    parts.append(
+        f"SELECTED RESPONSE ({branch.source_model_label}):\n" + selected
+    )
+
+    if branch.sibling_responses:
+        sib_lines: list[str] = []
+        for sib in branch.sibling_responses[:_MAX_BRANCH_SIBLINGS]:
+            body = _truncate(sib.response, _MAX_BRANCH_SIBLING_CHARS) or ""
+            sib_lines.append(f"--- {sib.model_label} ---\n{body}")
+        parts.append("OTHER SUCCESSFUL MODEL RESPONSES:\n" + "\n\n".join(sib_lines))
+
+    judge = _truncate(branch.judge_summary, _MAX_SUMMARY_CHARS)
+    if judge:
+        parts.append("JUDGE SUMMARY:\n" + judge)
+
+    final = _truncate(branch.final_synthesis, _MAX_BRANCH_FIELD_CHARS)
+    if final:
+        parts.append("FINAL SYNTHESIS:\n" + final)
+
+    pipeline = _truncate(branch.pipeline_trace_summary, _MAX_BRANCH_PIPELINE_CHARS)
+    if pipeline:
+        parts.append("PIPELINE TRACE SUMMARY:\n" + pipeline)
+
+    return "\n\n".join(parts)
 
 
 def build_context_for_prompt(

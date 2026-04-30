@@ -286,23 +286,47 @@ export function AppSidebar({
               <ul className="space-y-0.5">
                 {chats.map((c) => {
                   const active = c.id === chatId;
+                  const isBranch = !!c.isBranch;
+                  // Indent only when the parent chat is also visible in the
+                  // current list — otherwise the indent looks orphaned.
+                  const indent =
+                    isBranch &&
+                    c.parentChatId &&
+                    chats.some((p) => p.id === c.parentChatId);
                   return (
                     <li key={c.id}>
                       <button
                         type="button"
                         onClick={() => onSelectChat(c)}
-                        className={`w-full rounded-lg px-2 py-2 text-left transition ${
+                        className={`w-full rounded-lg py-2 text-left transition ${
+                          indent ? "pl-5 pr-2" : "px-2"
+                        } ${
                           active
                             ? "bg-blue-600/15 ring-1 ring-blue-500/40"
                             : "hover:bg-zinc-900"
                         }`}
+                        title={isBranch ? "Branch chat" : undefined}
                       >
                         <p
-                          className={`truncate text-sm font-medium ${
+                          className={`flex items-center gap-1.5 truncate text-sm font-medium ${
                             active ? "text-blue-100" : "text-zinc-200"
                           }`}
                         >
-                          {c.title}
+                          {isBranch ? (
+                            <span
+                              aria-hidden
+                              className="shrink-0 text-blue-300/80"
+                              title="Branch chat"
+                            >
+                              ↳
+                            </span>
+                          ) : null}
+                          <span className="truncate">{c.title}</span>
+                          {isBranch ? (
+                            <span className="ml-auto rounded-md border border-blue-900/40 bg-blue-950/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-blue-200/90">
+                              branch
+                            </span>
+                          ) : null}
                         </p>
                         <p className="text-[11px] text-zinc-500">
                           {relativeTime(c.updatedAt)}

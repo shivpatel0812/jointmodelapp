@@ -11,6 +11,12 @@ type Props = {
 export function ChatThread({ chat, messages, loading, embedded }: Props) {
   if (!chat) return null;
 
+  // Hide the auto-generated branch-context seed; it's already shown in the
+  // BranchContextCard above the thread.
+  const visibleMessages = messages.filter(
+    (m) => !(m.role === "system" && m.mode === "branch_context"),
+  );
+
   const inner = (
     <>
       {!embedded ? (
@@ -22,7 +28,7 @@ export function ChatThread({ chat, messages, loading, embedded }: Props) {
             ) : null}
           </div>
           <span className="text-xs text-zinc-500">
-            {messages.length} message{messages.length === 1 ? "" : "s"}
+            {visibleMessages.length} message{visibleMessages.length === 1 ? "" : "s"}
           </span>
         </div>
       ) : chat.summary ? (
@@ -31,13 +37,13 @@ export function ChatThread({ chat, messages, loading, embedded }: Props) {
 
       {loading ? (
         <p className="text-sm text-zinc-500">Loading messages…</p>
-      ) : messages.length === 0 ? (
+      ) : visibleMessages.length === 0 ? (
         <p className="text-sm text-zinc-500">
           No saved messages yet. Send a prompt to start the thread.
         </p>
       ) : (
         <ol className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
-          {messages.map((m) => (
+          {visibleMessages.map((m) => (
             <li
               key={m.id}
               className={
