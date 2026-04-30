@@ -14,6 +14,13 @@ from google import genai
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
+from context import (
+    ContextBlock,
+    ContextMessage,
+    build_context_for_prompt,
+    format_context_block,
+)
+
 # Always load backend/.env even if uvicorn is started from another cwd.
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -76,6 +83,13 @@ class GenerateRequest(BaseModel):
         default=None,
         description="Subset of model ids; default = all models with configured API keys.",
     )
+    context: ContextBlock | None = Field(
+        default=None,
+        description=(
+            "Optional memory snapshot (project + chat summary, recent messages, "
+            "decisions, open questions). Already fetched + truncated client-side."
+        ),
+    )
 
 
 class ModelOutput(BaseModel):
@@ -131,6 +145,10 @@ class EvaluateRequest(BaseModel):
         max_length=32,
         description="Models that errored or were skipped; excluded from scoring, mentioned in rationale.",
     )
+    context: ContextBlock | None = Field(
+        default=None,
+        description="Optional memory snapshot used to ground judging + synthesis.",
+    )
 
 
 class ModelScore(BaseModel):
@@ -170,6 +188,31 @@ class PipelineRequest(BaseModel):
     improver_model_id: str = Field(..., min_length=1, max_length=256)
     verifier_model_id: str | None = Field(default=None, max_length=256)
     final_model_id: str = Field(..., min_length=1, max_length=256)
+    context: ContextBlock | None = Field(
+        default=None,
+        description="Optional memory snapshot included in EVERY pipeline step prompt.",
+    )
+
+
+class SummarizeRequest(BaseModel):
+    """Rolling-summary request used after a chat turn or completed run."""
+
+    project_title: str | None = Field(default=None, max_length=240)
+    project_summary: str | None = Field(default=None, max_length=8_000)
+    chat_summary: str | None = Field(default=None, max_length=8_000)
+    recent_messages: list[ContextMessage] = Field(default_factory=list, max_length=32)
+    update_project_summary: bool = Field(
+        default=True,
+        description="If true, also produce an updated project-level summary.",
+    )
+
+
+class SummarizeResult(BaseModel):
+    chat_summary: str
+    project_summary: str | None = None
+    decisions: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
 
 
 class PipelineStepResult(BaseModel):
@@ -528,8 +571,16 @@ async def evaluate(req: EvaluateRequest) -> EvaluationResult:
             + "\n"
         )
 
+    context_text = format_context_block(req.context)
+    context_section = (
+        f"\nMemory / project context (use to ground scoring; do NOT score the context itself):\n{context_text}\n"
+        if context_text
+        else ""
+    )
+
     lines: list[str] = [
         f"User task / question:\n{req.prompt.strip()}\n",
+        context_section,
         excluded_block,
         "Candidate answers (only these may receive scores and may win):\n",
     ]
@@ -594,8 +645,10 @@ Rules:
             "Write ONE polished answer the user can rely on. Merge the strongest, "
             "non-redundant parts of the candidate answers. Resolve disagreements cautiously "
             "(prefer hedging or 'sources differ' when candidates conflict). Do not invent "
-            "facts beyond what candidates support. Omit model names unless needed for clarity.",
+            "facts beyond what candidates support. Omit model names unless needed for clarity. "
+            "Stay consistent with the project context if provided.",
             f"\nOriginal question:\n{req.prompt.strip()}\n",
+            (f"\nProject / chat context:\n{context_text}\n" if context_text else ""),
             "\nCandidates:\n",
         ]
         for c in screened:
@@ -623,6 +676,114 @@ Rules:
     )
 
 
+@app.post("/api/summarize", response_model=SummarizeResult)
+async def summarize(req: SummarizeRequest) -> SummarizeResult:
+    """
+    Rolling summary for a chat (and optionally the parent project).
+
+    Called by the frontend after every few turns or after a completed run. Uses
+    the same OpenAI judge model used by /api/evaluate; the API key never leaves
+    the server. No Firestore access here — the caller persists the result.
+
+    TODO(memory): when we add embeddings/vector retrieval, fold older messages
+    in here too instead of relying purely on the rolling summary.
+    """
+    if not OPENAI_CLIENT:
+        raise HTTPException(
+            status_code=503,
+            detail="Summarization requires OPENAI_API_KEY (uses the OpenAI API).",
+        )
+    if not req.recent_messages and not req.chat_summary:
+        raise HTTPException(
+            status_code=400,
+            detail="Need either recent_messages or an existing chat_summary to summarize.",
+        )
+
+    msg_lines: list[str] = []
+    for m in req.recent_messages[-16:]:
+        body = m.content.strip()
+        if len(body) > 1500:
+            body = body[:1500] + "…"
+        prefix = "USER" if m.role == "user" else (
+            f"ASSISTANT ({m.model_id})" if m.model_id else "ASSISTANT"
+        )
+        msg_lines.append(f"{prefix}: {body}")
+    transcript = "\n\n".join(msg_lines) if msg_lines else "(no new messages)"
+
+    prior_chat = (req.chat_summary or "").strip() or "(none yet)"
+    prior_project = (req.project_summary or "").strip() or "(none yet)"
+    project_title = (req.project_title or "").strip() or "(untitled)"
+
+    project_block = ""
+    if req.update_project_summary:
+        project_block = (
+            ',\n  "project_summary": "<UPDATED 4-8 sentence project-level summary, capturing what the user is building, key decisions, features implemented. If nothing project-level changed, return the existing summary unchanged.>"'
+        )
+
+    system = (
+        "You maintain rolling summaries for an AI coding assistant so the user "
+        "doesn't have to retype project context every session. Be concise, "
+        "concrete, and specific. Never invent facts. Output JSON only."
+    )
+    user = f"""Project title: {project_title}
+
+Existing project summary:
+{prior_project}
+
+Existing chat summary:
+{prior_chat}
+
+New transcript (most recent turns):
+{transcript}
+
+Update the rolling memory. Capture: what the user is building, important decisions made, features implemented, open questions, and likely next steps. Drop chit-chat. Keep names, file paths, and tech stack details verbatim.
+
+Return ONLY valid JSON with this exact shape:
+{{
+  "chat_summary": "<UPDATED 3-6 sentence summary of THIS chat including the new transcript. Concrete and specific.>",
+  "decisions": ["<short bullets of decisions reaffirmed or made>"],
+  "open_questions": ["<short bullets of unresolved questions>"],
+  "next_steps": ["<short bullets of likely next steps>"]{project_block}
+}}"""
+
+    try:
+        raw = await _run_openai_judge_json(
+            (SYNTHESIS_MODEL_ID or JUDGE_MODEL_ID).strip(), system, user
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Summarize request failed: {e}") from e
+
+    blob = _extract_json_object(raw)
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=502, detail=f"Summarizer returned invalid JSON: {e}"
+        ) from e
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="Summarizer output is not a JSON object")
+
+    def _strs(v: Any, max_items: int = 12) -> list[str]:
+        if not isinstance(v, list):
+            return []
+        return [str(x).strip() for x in v[:max_items] if str(x).strip()]
+
+    chat_summary = str(data.get("chat_summary", "") or "").strip()
+    if not chat_summary:
+        chat_summary = prior_chat if prior_chat != "(none yet)" else ""
+    project_summary = None
+    if req.update_project_summary:
+        project_summary = str(data.get("project_summary", "") or "").strip() or None
+
+    return SummarizeResult(
+        chat_summary=chat_summary,
+        project_summary=project_summary,
+        decisions=_strs(data.get("decisions")),
+        open_questions=_strs(data.get("open_questions")),
+        next_steps=_strs(data.get("next_steps")),
+    )
+
+
 @app.post("/api/pipeline", response_model=PipelineResult)
 async def run_pipeline(req: PipelineRequest) -> PipelineResult:
     registry = _registry_by_id()
@@ -641,10 +802,15 @@ async def run_pipeline(req: PipelineRequest) -> PipelineResult:
     prompt = req.prompt.strip()
     trace: list[PipelineStepResult] = []
 
-    draft_prompt = f"""Original user prompt:
+    # Memory / project context — included in every step so the pipeline does not
+    # drift between draft → critique → improve → verify → final.
+    context_text = format_context_block(req.context)
+    context_section = f"{context_text}\n\n" if context_text else ""
+
+    draft_prompt = f"""{context_section}Original user prompt:
 {prompt}
 
-Task: Write the best initial draft answer to the original prompt. Stay directly grounded in the prompt. If the prompt asks for current or factual information, include uncertainty or dates where appropriate."""
+Task: Write the best initial draft answer to the original prompt. Stay directly grounded in the prompt and consistent with the project context above (if any). If the prompt asks for current or factual information, include uncertainty or dates where appropriate."""
     draft = await _run_pipeline_step(
         "draft",
         registry[req.draft_model_id],
@@ -662,7 +828,7 @@ Task: Write the best initial draft answer to the original prompt. Stay directly 
         )
         return PipelineResult(status="failed", final_answer=None, trace=trace)
 
-    critique_prompt = f"""Original user prompt:
+    critique_prompt = f"""{context_section}Original user prompt:
 {prompt}
 
 Draft answer to critique:
@@ -702,7 +868,7 @@ Focus on factual risk, missing caveats, unsupported claims, clarity, completenes
         return PipelineResult(status="failed", final_answer=None, trace=trace)
 
     critique_for_prompt = json.dumps(critique.structured, indent=2) if critique.structured else critique.content
-    improve_prompt = f"""Original user prompt:
+    improve_prompt = f"""{context_section}Original user prompt:
 {prompt}
 
 Draft answer:
@@ -711,7 +877,7 @@ Draft answer:
 Structured critique:
 {critique_for_prompt}
 
-Task: Produce an improved answer. Keep what is strong, address the critique, remove or hedge unsupported claims, and stay focused on the original prompt."""
+Task: Produce an improved answer. Keep what is strong, address the critique, remove or hedge unsupported claims, and stay focused on the original prompt and the project context above (if any)."""
     improve = await _run_pipeline_step(
         "improve",
         registry[req.improver_model_id],
@@ -732,7 +898,7 @@ Task: Produce an improved answer. Keep what is strong, address the critique, rem
         "and should preserve uncertainty where the improved answer lacks support."
     )
     if req.verifier_model_id:
-        verify_prompt = f"""Original user prompt:
+        verify_prompt = f"""{context_section}Original user prompt:
 {prompt}
 
 Improved answer to verify:
@@ -770,7 +936,7 @@ Be conservative. If a claim needs external checking, list it under claims_to_ver
     else:
         trace.append(_empty_step("verify", None, "No verifier model selected."))
 
-    final_prompt = f"""Original user prompt:
+    final_prompt = f"""{context_section}Original user prompt:
 {prompt}
 
 Improved answer:
@@ -779,7 +945,7 @@ Improved answer:
 Verification notes:
 {verification_notes}
 
-Task: Produce the final joint answer for the user. The final answer must be generated from the improved answer and the verification notes, while still answering the original prompt. If verification notes identify unresolved claims, either remove those claims, hedge them, or clearly state what should be checked."""
+Task: Produce the final joint answer for the user. The final answer must be generated from the improved answer and the verification notes, while still answering the original prompt and remaining consistent with the project context above (if any). If verification notes identify unresolved claims, either remove those claims, hedge them, or clearly state what should be checked."""
     final = await _run_pipeline_step(
         "final",
         registry[req.final_model_id],
@@ -900,5 +1066,6 @@ async def generate(req: GenerateRequest) -> list[ModelOutput]:
             return out.model_copy(update={"latency_ms": None})
         return out.model_copy(update={"latency_ms": elapsed_ms})
 
-    tasks = [_timed(meta, req.prompt) for meta in chosen]
+    composed_prompt = build_context_for_prompt(req.context, req.prompt)
+    tasks = [_timed(meta, composed_prompt) for meta in chosen]
     return await asyncio.gather(*tasks)

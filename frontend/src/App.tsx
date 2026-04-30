@@ -19,10 +19,22 @@ import {
   type PipelineResult,
   type PipelineStepResult,
 } from "./api";
+import { ChatThread } from "./components/ChatThread";
+import { ProjectChatBar } from "./components/ProjectChatBar";
+import { buildContextForPrompt } from "./context";
 import { type SavedRun, loadRecentRuns, makeSummary, saveRun } from "./db";
+import { loadMessages } from "./firestore/messages";
+import type { Chat, ChatMessage, Project, RunMode } from "./firestore/types";
 import { auth, finalizeRedirectSignIn, googleProvider } from "./firebase";
-
-type RunMode = "compare" | "synthesize" | "pipeline";
+import {
+  recordCompareOutputs,
+  recordPipelineFinal,
+  recordProjectRun,
+  recordSynthesis,
+  recordUserMessage,
+  refreshRollingSummary,
+  shouldRefreshSummary,
+} from "./memory";
 
 function describeAuthRedirectError(e: unknown): string {
   const code =
@@ -351,6 +363,14 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
+  // Project + chat memory
+  const [project, setProject] = useState<Project | null>(null);
+  const [chat, setChat] = useState<Chat | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [contextActive, setContextActive] = useState(false);
+  const [pcRefresh, setPcRefresh] = useState(0);
+
   // Models
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -403,6 +423,9 @@ export default function App() {
   useEffect(() => {
     if (!user) {
       setHistory([]);
+      setProject(null);
+      setChat(null);
+      setMessages([]);
       return;
     }
     setHistoryLoading(true);
@@ -411,6 +434,29 @@ export default function App() {
       .catch(() => setHistory([]))
       .finally(() => setHistoryLoading(false));
   }, [user]);
+
+  // Load saved messages whenever the active chat changes.
+  useEffect(() => {
+    if (!user || !chat) {
+      setMessages([]);
+      return;
+    }
+    let cancelled = false;
+    setMessagesLoading(true);
+    loadMessages(user.uid, chat.id)
+      .then((m) => {
+        if (!cancelled) setMessages(m);
+      })
+      .catch(() => {
+        if (!cancelled) setMessages([]);
+      })
+      .finally(() => {
+        if (!cancelled) setMessagesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, chat]);
 
   // Fetch available models
   useEffect(() => {
@@ -517,24 +563,66 @@ export default function App() {
     setOutputs(null);
     setEvaluation(null);
     setPipelineResult(null);
+    setContextActive(false);
     let finalOutputs: ModelOutput[] | null = null;
     let finalEvaluation: EvaluationResult | null = null;
     let finalPipeline: PipelineResult | null = null;
     try {
-      if (mode === "pipeline") {
-        const result = await runPipeline(trimmed, {
-          draft_model_id: pipelineModels.draft,
-          critic_model_id: pipelineModels.critic,
-          improver_model_id: pipelineModels.improver,
-          verifier_model_id: pipelineModels.verifier || null,
-          final_model_id: pipelineModels.final,
+      // Build the compact context block from Firestore (when signed in).
+      let contextBlock = null;
+      if (user) {
+        try {
+          const built = await buildContextForPrompt(
+            user.uid,
+            project?.id ?? null,
+            chat?.id ?? null,
+            trimmed,
+          );
+          if (built.hasContent) {
+            contextBlock = built.context;
+            setContextActive(true);
+          }
+        } catch {
+          // Context retrieval is best-effort; fall back to no context.
+        }
+      }
+
+      // Save the user's message immediately (gives the thread a record even if
+      // the run errors out later).
+      if (user && chat) {
+        await recordUserMessage(user.uid, chat.id, trimmed, mode).catch(() => {
+          /* best-effort */
         });
+      }
+
+      if (mode === "pipeline") {
+        const result = await runPipeline(
+          trimmed,
+          {
+            draft_model_id: pipelineModels.draft,
+            critic_model_id: pipelineModels.critic,
+            improver_model_id: pipelineModels.improver,
+            verifier_model_id: pipelineModels.verifier || null,
+            final_model_id: pipelineModels.final,
+          },
+          contextBlock,
+        );
         finalPipeline = result;
         setPipelineResult(result);
+        if (user && chat) {
+          await recordPipelineFinal(user.uid, chat.id, mode, result).catch(() => {
+            /* best-effort */
+          });
+        }
       } else {
-        const results = await generateParallel(trimmed, selectedIds);
+        const results = await generateParallel(trimmed, selectedIds, contextBlock);
         finalOutputs = results;
         setOutputs(results);
+        if (user && chat) {
+          await recordCompareOutputs(user.uid, chat.id, mode, results).catch(() => {
+            /* best-effort */
+          });
+        }
         if (mode === "synthesize") {
           const failedAttempts: FailedAttempt[] = results
             .filter((r) => r.skipped || r.error)
@@ -558,15 +646,42 @@ export default function App() {
           } else {
             const ev = await evaluateResponses(trimmed, candidates, failedAttempts, {
               include_synthesis: true,
+              context: contextBlock,
             });
             finalEvaluation = ev;
             setEvaluation(ev);
+            if (user && chat) {
+              await recordSynthesis(user.uid, chat.id, mode, ev).catch(() => {
+                /* best-effort */
+              });
+            }
           }
         }
       }
 
-      // Persist to Firestore when signed in
+      // Persist a structured run + reload the thread / refresh history.
       if (user) {
+        if (project) {
+          await recordProjectRun(user.uid, project.id, {
+            mode,
+            prompt: trimmed,
+            selectedModels:
+              mode === "pipeline"
+                ? [
+                    pipelineModels.draft,
+                    pipelineModels.critic,
+                    pipelineModels.improver,
+                    ...(pipelineModels.verifier ? [pipelineModels.verifier] : []),
+                    pipelineModels.final,
+                  ]
+                : selectedIds,
+            outputs: finalOutputs,
+            evaluation: finalEvaluation,
+            pipelineResult: finalPipeline,
+          }).catch(() => setSaveError("Run complete — saving project run failed."));
+        }
+
+        // Legacy flat history (kept so existing users still see "Run history").
         const runData = {
           prompt: trimmed,
           mode,
@@ -584,13 +699,38 @@ export default function App() {
         saveRun(user.uid, runData)
           .then(() => refreshHistory(user.uid))
           .catch(() => setSaveError("Run complete — but saving to history failed."));
+
+        if (chat) {
+          // Reload thread so the new turn shows up.
+          loadMessages(user.uid, chat.id)
+            .then((m) => {
+              setMessages(m);
+              if (shouldRefreshSummary(m.length)) {
+                void refreshRollingSummary(user.uid, chat, project).then(() =>
+                  setPcRefresh((n) => n + 1),
+                );
+              }
+            })
+            .catch(() => {
+              /* keep existing messages */
+            });
+        }
       }
     } catch (e: unknown) {
       setRunError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [prompt, selectedIds, mode, pipelineModels, user, refreshHistory]);
+  }, [
+    prompt,
+    selectedIds,
+    mode,
+    pipelineModels,
+    user,
+    project,
+    chat,
+    refreshHistory,
+  ]);
 
   const handleHistorySelect = useCallback((run: SavedRun) => {
     setPrompt(run.prompt);
@@ -701,6 +841,21 @@ export default function App() {
           </div>
         ) : null}
       </header>
+
+      {/* Project + chat memory */}
+      {user ? (
+        <>
+          <ProjectChatBar
+            uid={user.uid}
+            projectId={project?.id ?? null}
+            chatId={chat?.id ?? null}
+            onSelectProject={setProject}
+            onSelectChat={setChat}
+            refreshKey={pcRefresh}
+          />
+          <ChatThread chat={chat} messages={messages} loading={messagesLoading} />
+        </>
+      ) : null}
 
       {/* Run controls */}
       <section className="mb-8 rounded-2xl border border-slate-800 bg-slate-900/40 p-5 shadow-xl shadow-black/30">
@@ -874,6 +1029,14 @@ export default function App() {
           ) : (
             <span className="text-xs text-slate-600">Sign in to save runs.</span>
           )}
+          {contextActive ? (
+            <span
+              title="Project + chat memory was attached to this run's prompts."
+              className="rounded-full border border-emerald-700/60 bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-200"
+            >
+              Using saved context
+            </span>
+          ) : null}
         </div>
       </section>
 

@@ -6,6 +6,10 @@ function apiUrl(path: string): string {
   return API_BASE ? `${API_BASE}${p}` : p;
 }
 
+import type { ContextBlock, ContextMessage } from "./firestore/types";
+
+export type { ContextBlock, ContextMessage };
+
 export type ModelInfo = {
   model_id: string;
   provider: string;
@@ -34,6 +38,7 @@ export async function fetchModels(): Promise<ModelInfo[]> {
 export async function generateParallel(
   prompt: string,
   modelIds: string[],
+  context?: ContextBlock | null,
 ): Promise<ModelOutput[]> {
   const res = await fetch(apiUrl("/api/generate"), {
     method: "POST",
@@ -41,6 +46,7 @@ export async function generateParallel(
     body: JSON.stringify({
       prompt,
       model_ids: modelIds,
+      ...(context ? { context } : {}),
     }),
   });
   if (!res.ok) {
@@ -110,7 +116,7 @@ export async function evaluateResponses(
     latency_ms?: number | null;
   }[],
   failedAttempts: FailedAttempt[],
-  options?: { include_synthesis?: boolean },
+  options?: { include_synthesis?: boolean; context?: ContextBlock | null },
 ): Promise<EvaluationResult> {
   const res = await fetch(apiUrl("/api/evaluate"), {
     method: "POST",
@@ -120,6 +126,7 @@ export async function evaluateResponses(
       candidates,
       failed_attempts: failedAttempts,
       include_synthesis: options?.include_synthesis ?? true,
+      ...(options?.context ? { context: options.context } : {}),
     }),
   });
   if (!res.ok) {
@@ -138,15 +145,51 @@ export async function runPipeline(
     verifier_model_id?: string | null;
     final_model_id: string;
   },
+  context?: ContextBlock | null,
 ): Promise<PipelineResult> {
   const res = await fetch(apiUrl("/api/pipeline"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, ...modelIds }),
+    body: JSON.stringify({
+      prompt,
+      ...modelIds,
+      ...(context ? { context } : {}),
+    }),
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Pipeline failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export type SummarizeRequest = {
+  project_title?: string | null;
+  project_summary?: string | null;
+  chat_summary?: string | null;
+  recent_messages: ContextMessage[];
+  update_project_summary?: boolean;
+};
+
+export type SummarizeResult = {
+  chat_summary: string;
+  project_summary: string | null;
+  decisions: string[];
+  open_questions: string[];
+  next_steps: string[];
+};
+
+export async function summarizeMemory(
+  req: SummarizeRequest,
+): Promise<SummarizeResult> {
+  const res = await fetch(apiUrl("/api/summarize"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Summarize failed: ${res.status}`);
   }
   return res.json();
 }
