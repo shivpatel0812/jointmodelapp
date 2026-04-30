@@ -143,14 +143,14 @@ function PipelineModelSelect({
 }) {
   return (
     <label htmlFor={id} className="block">
-      <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+      <span className="mb-0.5 block text-[10px] font-medium uppercase tracking-wide text-zinc-500">
         {label}
       </span>
       <select
         id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-lg border border-zinc-700 bg-zinc-950/80 px-3 py-2 text-sm text-zinc-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        className="w-full rounded-md border border-zinc-700/90 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
       >
         {optional ? <option value="">No verifier</option> : null}
         {models.map((m) => (
@@ -860,13 +860,13 @@ export default function App() {
               <span className="mx-1.5 text-zinc-600">/</span>
               <span className="text-zinc-300">{breadcrumbChat}</span>
             </nav>
-            <header className="mb-8">
-              <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+            <header className="mb-5">
+              <h1 className="text-xl font-semibold tracking-tight text-white sm:text-2xl">
                 Multi-model responses and joint pipeline
               </h1>
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-500">
-                Compare models side-by-side, synthesize the strongest successful answers, or run a
-                sequential draft → critique → improve → verify → final workflow.
+              <p className="mt-1 max-w-2xl text-xs leading-snug text-zinc-500 sm:text-sm">
+                Compare side-by-side, synthesize, or run draft → critique → improve → verify →
+                final.
               </p>
             </header>
             {authError ? (
@@ -875,11 +875,11 @@ export default function App() {
               </div>
             ) : null}
             {user && chat ? (
-              <details className="mb-6 rounded-xl border border-zinc-800 bg-zinc-900/30">
-                <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-zinc-300">
+              <details className="mb-4 rounded-lg border border-zinc-800/80 bg-zinc-950/40">
+                <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-zinc-400">
                   Chat messages ({messages.length})
                 </summary>
-                <div className="border-t border-zinc-800 px-2 pb-2">
+                <div className="border-t border-zinc-800/80 px-2 pb-2">
                   <ChatThread
                     chat={chat}
                     messages={messages}
@@ -892,54 +892,55 @@ export default function App() {
           </>
         )}
 
-      {/* Run controls */}
-      <section className="mb-8 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 shadow-xl shadow-black/30">
+      {/* Run controls — flat layout (no heavy outer card) */}
+      <section className="mb-6 space-y-4 border-b border-zinc-800/70 pb-6">
         <PromptAttachments
           attachments={attachments}
           onChange={setAttachments}
           onError={setAttachmentError}
         >
-          <label htmlFor="prompt" className="mb-2 block text-sm font-medium text-zinc-300">
+          <label htmlFor="prompt" className="mb-1 block text-xs font-medium text-zinc-400">
             Prompt
           </label>
           <textarea
             id="prompt"
-            rows={5}
+            rows={4}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="Ask something… Drag images onto this box to attach them."
-            className="w-full resize-y rounded-xl border border-zinc-700 bg-zinc-950/80 px-3 py-2.5 font-sans text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full resize-y rounded-lg border border-zinc-700/90 bg-zinc-950 px-2.5 py-2 font-sans text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </PromptAttachments>
         {attachmentError ? (
-          <p className="mt-2 text-sm text-amber-400/95">{attachmentError}</p>
+          <p className="text-sm text-amber-400/95">{attachmentError}</p>
         ) : null}
 
-        {/* Mode selector */}
-        <div className="mt-6">
-          <p className="mb-2 text-sm font-medium text-zinc-300">Mode</p>
-          <div className="grid gap-3 md:grid-cols-3">
+        {/* Mode — compact pills (full description on hover) */}
+        <div>
+          <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-zinc-500">Mode</p>
+          <div className="flex flex-wrap gap-1.5">
             {(
               [
                 ["compare", "Compare", "Run several models independently."],
                 [
                   "synthesize",
                   "Synthesize",
-                  "Run, then draft-merge successful answers.",
+                  "Run models, then judge and merge into one answer.",
                 ],
                 [
                   "pipeline",
                   "Joint pipeline",
-                  "Draft, critique & improve in sequence + verify or final.",
+                  "Sequential draft → critique → improve → verify → final.",
                 ],
               ] as [RunMode, string, string][]
             ).map(([id, title, desc]) => (
               <label
                 key={id}
-                className={`cursor-pointer rounded-xl border px-4 py-3 text-sm transition-colors ${
+                title={desc}
+                className={`cursor-pointer rounded-lg border px-3 py-1.5 text-sm transition-colors ${
                   mode === id
-                    ? "border-blue-500/70 bg-blue-500/10 ring-1 ring-blue-500/30"
-                    : "border-zinc-800 bg-zinc-950/40 text-zinc-400 hover:border-zinc-700"
+                    ? "border-blue-500/80 bg-blue-500/15 font-medium text-blue-100"
+                    : "border-zinc-700/80 bg-transparent text-zinc-400 hover:border-zinc-600 hover:bg-zinc-900/50 hover:text-zinc-200"
                 }`}
               >
                 <input
@@ -950,8 +951,7 @@ export default function App() {
                   onChange={() => setMode(id)}
                   className="sr-only"
                 />
-                <span className="block font-medium text-zinc-100">{title}</span>
-                <span className="mt-1 block text-xs text-zinc-500">{desc}</span>
+                {title}
               </label>
             ))}
           </div>
@@ -959,14 +959,16 @@ export default function App() {
 
         {/* Model selection */}
         {mode === "pipeline" ? (
-          <div className="mt-6 rounded-xl border border-zinc-800 bg-zinc-950/40 p-4">
-            <p className="mb-3 text-sm font-medium text-zinc-300">Pipeline models</p>
+          <div className="space-y-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+              Pipeline models
+            </p>
             {modelsError ? (
               <p className="text-sm text-red-400">{modelsError}</p>
             ) : availableModels.length === 0 ? (
               <p className="text-sm text-zinc-500">No available models yet.</p>
             ) : (
-              <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
                 {(
                   [
                     ["draft-model", "Draft", "draft"],
@@ -988,13 +990,12 @@ export default function App() {
                 ))}
               </div>
             )}
-            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
-              Every step includes the original prompt. Verify is optional — if it fails, the
-              final step continues with a caution note.
+            <p className="text-[11px] leading-snug text-zinc-600">
+              Verify optional — if it fails, final continues with a caution note.
             </p>
             {hasImageAttachments ? (
               <div
-                className={`mt-3 rounded-lg border px-3 py-2 text-xs leading-relaxed ${
+                className={`rounded-md border px-2.5 py-1.5 text-[11px] leading-snug ${
                   draftSupportsVision
                     ? "border-emerald-900/50 bg-emerald-950/25 text-emerald-200/90"
                     : "border-amber-800/60 bg-amber-950/30 text-amber-200/95"
@@ -1015,19 +1016,21 @@ export default function App() {
             ) : null}
           </div>
         ) : (
-          <div className="relative mt-6" ref={modelPickerRef}>
-            <p className="mb-2 text-sm font-medium text-zinc-300">Models</p>
+          <div className="relative" ref={modelPickerRef}>
+            <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-zinc-500">
+              Models
+            </p>
             {modelsError ? (
               <p className="text-sm text-red-400">{modelsError}</p>
             ) : models.length === 0 ? (
               <p className="text-sm text-zinc-500">Loading models…</p>
             ) : (
               <>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   {selectedModelInfos.map((m) => (
                     <span
                       key={m.model_id}
-                      className={`inline-flex items-center gap-1 rounded-full border bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100 ${
+                      className={`inline-flex items-center gap-1 rounded-md border bg-zinc-900/80 px-2 py-1 text-xs text-zinc-100 ${
                         hasImageAttachments && !m.supports_vision
                           ? "border-amber-700/70 ring-1 ring-amber-600/25"
                           : "border-zinc-600"
@@ -1058,21 +1061,21 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setShowModelPicker((s) => !s)}
-                    className="rounded-full border border-dashed border-zinc-600 px-3 py-1.5 text-sm font-medium text-zinc-400 transition hover:border-zinc-500 hover:bg-zinc-900 hover:text-zinc-200"
+                    className="rounded-md border border-dashed border-zinc-600 px-2 py-1 text-xs font-medium text-zinc-400 transition hover:border-zinc-500 hover:bg-zinc-900 hover:text-zinc-200"
                   >
-                    + Choose models
+                    + Models
                   </button>
                 </div>
                 {showModelPicker ? (
-                  <div className="absolute left-0 top-full z-20 mt-2 w-full max-w-md rounded-xl border border-zinc-700 bg-zinc-950 p-3 shadow-2xl shadow-black/50">
-                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  <div className="absolute left-0 top-full z-20 mt-1 w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-950 p-2 shadow-lg shadow-black/40">
+                    <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
                       Available models
                     </p>
-                    <ul className="max-h-56 space-y-0.5 overflow-y-auto pr-1">
+                    <ul className="max-h-52 space-y-0 overflow-y-auto pr-1">
                       {models.map((m) => (
                         <li key={m.model_id}>
                           <label
-                            className={`flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-sm ${
+                            className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs ${
                               m.available ? "hover:bg-zinc-900" : "cursor-not-allowed opacity-45"
                             }`}
                           >
@@ -1108,7 +1111,7 @@ export default function App() {
           </div>
         )}
 
-        <div className="mt-6 flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 pt-1">
           <button
             type="button"
             onClick={() => void run()}
@@ -1126,7 +1129,7 @@ export default function App() {
                   !pipelineModels.final
                 : selectedIds.length === 0)
             }
-            className="rounded-xl bg-blue-600 px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-blue-900/40 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500 disabled:shadow-none"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-blue-950/30 transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500 disabled:shadow-none"
           >
             {loading
               ? mode === "pipeline"

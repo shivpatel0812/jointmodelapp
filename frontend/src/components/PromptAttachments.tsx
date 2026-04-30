@@ -106,10 +106,10 @@ export function PromptAttachments({ children, attachments, onChange, onError }: 
         onDragLeave={onDragLeave}
         onDragOver={onDragOver}
         onDrop={onDrop}
-        className={`relative rounded-xl border transition ${
+        className={`relative rounded-lg border transition ${
           dragOver
-            ? "border-blue-500/80 bg-blue-500/[0.07] ring-2 ring-blue-500/35"
-            : "border-zinc-700/90 bg-zinc-950/30"
+            ? "border-blue-500/70 bg-blue-500/[0.06] ring-1 ring-blue-500/30"
+            : "border-zinc-800/80 bg-zinc-950/50"
         }`}
       >
         {dragOver ? (
@@ -123,12 +123,12 @@ export function PromptAttachments({ children, attachments, onChange, onError }: 
           </div>
         ) : null}
 
-        <div className="relative z-10 space-y-3 p-3 sm:p-4">
+        <div className="relative z-10 space-y-2 p-2 sm:p-2.5">
           {children}
 
-          <div className="flex flex-col gap-2 border-t border-zinc-800/80 pt-3">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <p className="text-xs text-zinc-500">
+          <div className="flex flex-col gap-1.5 border-t border-zinc-800/60 pt-2">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <p className="text-[11px] leading-snug text-zinc-600">
                 Drag & drop images onto this prompt box · PNG / JPEG / WebP · max{" "}
                 {MAX_ATTACHMENT_COUNT} · {Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024))} MB each
               </p>
