@@ -11,14 +11,20 @@ import {
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
+/** Prefer `VITE_FIREBASE_*` from `.env.local` / Vercel; fall back to the bundled project defaults. */
+function env(name: keyof ImportMetaEnv, fallback: string): string {
+  const v = import.meta.env[name];
+  return typeof v === "string" && v.trim().length > 0 ? v.trim() : fallback;
+}
+
 const firebaseConfig = {
-  apiKey: "AIzaSyDWhWRlRlsYxi6rl4_0s33_XVJFmDCKDmw",
-  authDomain: "jointmodelapp.firebaseapp.com",
-  projectId: "jointmodelapp",
-  storageBucket: "jointmodelapp.firebasestorage.app",
-  messagingSenderId: "918256895528",
-  appId: "1:918256895528:web:4a8432036dbeea69eed71d",
-  measurementId: "G-NXEK7JTCYT",
+  apiKey: env("VITE_FIREBASE_API_KEY", "AIzaSyDWhWRlRlsYxi6rl4_0s33_XVJFmDCKDmw"),
+  authDomain: env("VITE_FIREBASE_AUTH_DOMAIN", "jointmodelapp.firebaseapp.com"),
+  projectId: env("VITE_FIREBASE_PROJECT_ID", "jointmodelapp"),
+  storageBucket: env("VITE_FIREBASE_STORAGE_BUCKET", "jointmodelapp.firebasestorage.app"),
+  messagingSenderId: env("VITE_FIREBASE_MESSAGING_SENDER_ID", "918256895528"),
+  appId: env("VITE_FIREBASE_APP_ID", "1:918256895528:web:4a8432036dbeea69eed71d"),
+  measurementId: env("VITE_FIREBASE_MEASUREMENT_ID", "G-NXEK7JTCYT"),
 };
 
 const app = initializeApp(firebaseConfig);
