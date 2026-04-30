@@ -228,6 +228,22 @@ class EvaluationHighlights(BaseModel):
     fastest_model_id: str | None = None
 
 
+class ModelAgreement(BaseModel):
+    """Where candidates aligned vs disagreed (judge-generated)."""
+
+    agreed: list[str] = Field(default_factory=list)
+    differed: list[str] = Field(default_factory=list)
+
+
+class PerModelJudgeNote(BaseModel):
+    """Short UI blurbs per scored candidate."""
+
+    best_for: str | None = None
+    strength: str | None = None
+    weakness: str | None = None
+    note: str | None = None
+
+
 class EvaluationResult(BaseModel):
     scores: dict[str, ModelScore]
     winner_model_id: str
@@ -238,6 +254,15 @@ class EvaluationResult(BaseModel):
     excluded_failed_summary: list[str] = Field(
         default_factory=list,
         description="One line per failed model for UI (already excluded from scoring).",
+    )
+    winner_strengths: list[str] = Field(
+        default_factory=list,
+        description="Bullet strengths of the winning answer (judge JSON).",
+    )
+    model_agreement: ModelAgreement = Field(default_factory=ModelAgreement)
+    per_model_notes: dict[str, PerModelJudgeNote] = Field(
+        default_factory=dict,
+        description="Optional per-model blurbs keyed by model_id.",
     )
 
 
@@ -513,11 +538,55 @@ def _extract_json_object(raw: str) -> str:
     return t
 
 
+def _parse_string_list(val: Any, *, max_items: int = 14, max_len: int = 500) -> list[str]:
+    if not isinstance(val, list):
+        return []
+    out: list[str] = []
+    for x in val[:max_items]:
+        s = str(x).strip()
+        if s:
+            out.append(s[:max_len])
+    return out
+
+
+def _parse_model_agreement_block(val: Any) -> ModelAgreement:
+    if not isinstance(val, dict):
+        return ModelAgreement()
+    return ModelAgreement(
+        agreed=_parse_string_list(val.get("agreed")),
+        differed=_parse_string_list(val.get("differed")),
+    )
+
+
+def _parse_per_model_notes_block(val: Any, valid_ids: set[str]) -> dict[str, PerModelJudgeNote]:
+    if not isinstance(val, dict):
+        return {}
+    out: dict[str, PerModelJudgeNote] = {}
+    for mid in valid_ids:
+        block = val.get(mid)
+        if not isinstance(block, dict):
+            continue
+        out[mid] = PerModelJudgeNote(
+            best_for=str(block.get("best_for") or "").strip()[:160] or None,
+            strength=str(block.get("strength") or "").strip()[:600] or None,
+            weakness=str(block.get("weakness") or "").strip()[:600] or None,
+            note=str(block.get("note") or "").strip()[:600] or None,
+        )
+    return out
+
+
 def _parse_judge_json(
     raw: str,
     valid_ids: set[str],
-) -> tuple[dict[str, ModelScore], str, str]:
-    """Parse judge model output into scores + winner; coerce invalid fields."""
+) -> tuple[
+    dict[str, ModelScore],
+    str,
+    str,
+    list[str],
+    ModelAgreement,
+    dict[str, PerModelJudgeNote],
+]:
+    """Parse judge model output into scores + winner + extended UI fields."""
     blob = _extract_json_object(raw)
     try:
         data = json.loads(blob)
@@ -553,7 +622,12 @@ def _parse_judge_json(
         rationale = rationale[:4500] + "…"
     if not rationale:
         rationale = "No rationale provided by judge."
-    return scores, winner, rationale
+
+    winner_strengths = _parse_string_list(data.get("winner_strengths"), max_items=10, max_len=400)
+    model_agreement = _parse_model_agreement_block(data.get("model_agreement"))
+    per_model_notes = _parse_per_model_notes_block(data.get("per_model_notes"), valid_ids)
+
+    return scores, winner, rationale, winner_strengths, model_agreement, per_model_notes
 
 
 def _pick_fastest_model_id(candidates: list[EvaluateCandidate]) -> str | None:
@@ -786,7 +860,7 @@ async def evaluate(req: EvaluateRequest) -> EvaluationResult:
 
     system = """You are an impartial evaluator. You only see the candidate texts below—no web access—so do not claim an answer is "factually correct" unless the text itself cites verifiable sources or clear, checkable claims. Prefer answers that are internally consistent, hedged appropriately when uncertain, clear, complete for the question, well-supported WITHIN the text (quotes, links, named sources, or explicit reasoning), and—when the question is time-sensitive—explicit about dates, freshness, or limitations.
 
-Return ONLY valid JSON (no markdown) with this exact shape:
+Return ONLY valid JSON (no markdown fences) with this exact shape:
 {
   "scores": {
     "<model_id>": {
@@ -799,18 +873,35 @@ Return ONLY valid JSON (no markdown) with this exact shape:
     }
   },
   "winner_model_id": "<exactly one model_id from the scorable candidates>",
-  "rationale": "<5-10 sentences. Name the winning model_id and label. Say why it won on the rubric (not generic praise). Name a close second if any and how it differed. Note concrete weaknesses in other answers (missing caveats, vague numbers, no support, outdated framing). If models were excluded from scoring, state that clearly. Avoid calling any answer 'accurate' unless the answer itself shows checkable support; otherwise say 'appears plausible' or 'well supported within the text'.>"
+  "rationale": "<5-10 sentences. Name the winning model_id and label. Say why it won on the rubric (not generic praise). Name a close second if any and how it differed. Note concrete weaknesses in other answers (missing caveats, vague numbers, no support, outdated framing). If models were excluded from scoring, state that clearly. Avoid calling any answer 'accurate' unless the answer itself shows checkable support; otherwise say 'appears plausible' or 'well supported within the text'.>",
+  "winner_strengths": ["<short bullet>", "..."],
+  "model_agreement": {
+    "agreed": ["<facts or themes most candidates agreed on>", "..."],
+    "differed": ["<meaningful disagreements, omissions, or framing differences>", "..."]
+  },
+  "per_model_notes": {
+    "<model_id>": {
+      "best_for": "<e.g. Speed, Depth, Concision — one short phrase>",
+      "strength": "<one sentence>",
+      "weakness": "<one sentence>",
+      "note": "<optional extra UI note>"
+    }
+  }
 }
 
 Rules:
 - Every scorable candidate must have a scores entry keyed by exact model_id.
 - Use the full 1–5 range when answers differ; avoid giving all 5s unless truly tied on every axis.
 - winner_model_id must be one of the scorable candidate model_ids.
-- Penalize confident-sounding but unsupported specifics for factual or current-events questions."""
+- Penalize confident-sounding but unsupported specifics for factual or current-events questions.
+- Populate winner_strengths (3-6 items), model_agreement (2-6 bullets each side when possible), and per_model_notes for EVERY scorable candidate model_id with non-empty best_for, strength, and weakness."""
 
     try:
         raw_json = await _run_openai_judge_json(judge_id, system, user_blob)
-        scores, winner, rationale = _parse_judge_json(raw_json, valid_ids)
+        scores, winner, rationale, win_str, agree, per_notes = _parse_judge_json(
+            raw_json,
+            valid_ids,
+        )
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=502,
@@ -864,6 +955,9 @@ Rules:
         final_synthesis=synthesis,
         highlights=highlights,
         excluded_failed_summary=excluded_lines,
+        winner_strengths=win_str,
+        model_agreement=agree,
+        per_model_notes=per_notes,
     )
 
 

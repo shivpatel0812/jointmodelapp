@@ -21,7 +21,12 @@ import {
 } from "./api";
 import { AppSidebar } from "./components/AppSidebar";
 import { ChatThread } from "./components/ChatThread";
+import { MarkdownContent } from "./components/MarkdownContent";
 import { PromptAttachments } from "./components/PromptAttachments";
+import {
+  CompareRunResultsDashboard,
+  SynthesisResultsDashboard,
+} from "./components/SynthesisResultsDashboard";
 import {
   attachmentSummaryMeta,
   toImagePayloads,
@@ -103,10 +108,6 @@ function buildRunAttachmentNote(outputs: ModelOutput[], imageCount: number): str
     .join("\n");
 }
 
-function labelForModelId(models: ModelOutput[], id: string): string {
-  return models.find((m) => m.model_id === id)?.label ?? id;
-}
-
 function formatTs(ts: { toDate(): Date } | null): string {
   if (!ts) return "";
   try {
@@ -167,7 +168,7 @@ function PipelineStepCard({ step }: { step: PipelineStepResult }) {
   const title = step.step[0]?.toUpperCase() + step.step.slice(1);
   return (
     <details
-      open={step.step === "final"}
+      open={false}
       className={`rounded-xl border bg-slate-900/60 shadow-lg shadow-black/20 ${
         failed
           ? "border-red-900/50"
@@ -239,110 +240,6 @@ function PipelineStepCard({ step }: { step: PipelineStepResult }) {
         ) : null}
       </div>
     </details>
-  );
-}
-
-function OutputCard({
-  row,
-  winnerId,
-  score,
-}: {
-  row: ModelOutput;
-  winnerId: string | null;
-  score?: {
-    overall: number;
-    accuracy: number;
-    clarity: number;
-    completeness: number;
-    evidence: number;
-    recency: number;
-  };
-}) {
-  const isError = !!row.error && !row.skipped;
-  const isSkipped = row.skipped;
-  const isOk = !isError && !isSkipped;
-
-  const isWinner = Boolean(winnerId && row.model_id === winnerId && isOk);
-
-  return (
-    <article
-      className={`flex flex-col rounded-xl border bg-slate-900/60 shadow-lg shadow-black/20 backdrop-blur-sm ${
-        isWinner ? "border-amber-500/50 ring-1 ring-amber-500/30" : "border-slate-800"
-      }`}
-    >
-      <header className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-4 py-3">
-        {isError ? (
-          <span className="rounded-full bg-red-500/20 px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-red-200 ring-1 ring-red-500/40">
-            Failed
-          </span>
-        ) : isSkipped ? (
-          <span className="rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-amber-200 ring-1 ring-amber-500/40">
-            Skipped
-          </span>
-        ) : (
-          <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-200 ring-1 ring-emerald-500/25">
-            {row.provider}
-          </span>
-        )}
-        <h3 className="font-semibold text-slate-100">{row.label}</h3>
-        <span className="font-mono text-xs text-slate-500">{row.model_id}</span>
-        {isWinner ? (
-          <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-medium text-amber-200 ring-1 ring-amber-500/40">
-            Judge pick
-          </span>
-        ) : null}
-        {score && isOk ? (
-          <span className="ml-auto font-mono text-xs text-slate-400">
-            overall {score.overall}/5
-          </span>
-        ) : null}
-      </header>
-      <div className="min-h-[100px] flex-1 px-4 py-4">
-        {isSkipped ? (
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-amber-100/90">Not run</p>
-            <p className="text-sm text-amber-200/80">
-              {briefErrorReason(row.skip_reason ?? "Unavailable")}
-            </p>
-          </div>
-        ) : isError ? (
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-red-200/95">Request error</p>
-            <p className="text-sm leading-relaxed text-red-100/85">
-              {briefErrorReason(row.error ?? "")}
-            </p>
-            <details className="text-xs text-slate-500">
-              <summary className="cursor-pointer select-none text-slate-400 hover:text-slate-300">
-                Technical details
-              </summary>
-              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-slate-500">
-                {row.error ?? ""}
-              </pre>
-            </details>
-          </div>
-        ) : (
-          <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-slate-200">
-            {row.content ?? ""}
-          </pre>
-        )}
-      </div>
-      <footer className="border-t border-slate-800/80 px-4 py-2 text-xs text-slate-500">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-slate-400">
-            {row.attachment_note
-              ? row.attachment_note
-              : isOk
-                ? "Text only"
-                : null}
-          </span>
-          {isOk && row.latency_ms != null ? (
-            <span className="font-mono">
-              {row.latency_ms.toLocaleString(undefined, { maximumFractionDigits: 0 })} ms
-            </span>
-          ) : null}
-        </div>
-      </footer>
-    </article>
   );
 }
 
@@ -1237,9 +1134,16 @@ export default function App() {
                 : mode === "synthesize"
                   ? "Running & judging…"
                   : "Running…"
-              : mode === "pipeline"
-                ? "Run joint pipeline"
-                : "Run selected"}
+              : !loading &&
+                  ((outputs?.length ?? 0) > 0 ||
+                    evaluation !== null ||
+                    pipelineResult !== null)
+                ? "Run again"
+                : mode === "pipeline"
+                  ? "Run joint pipeline"
+                  : mode === "synthesize"
+                    ? "Run & synthesize"
+                    : "Run selected"}
           </button>
           {!anyConfigured && models.length > 0 ? (
             <span className="text-sm text-amber-400/90">
@@ -1277,8 +1181,16 @@ export default function App() {
 
       {/* Pipeline result */}
       {pipelineResult ? (
-        <section className="mb-8 space-y-6">
-          <section className="rounded-2xl border border-teal-800/50 bg-teal-950/15 p-5 shadow-lg shadow-black/20">
+        <section className="mb-10 space-y-6">
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/50 px-4 py-3 text-sm">
+            <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-200 ring-1 ring-emerald-500/25">
+              Pipeline {pipelineResult.status}
+            </span>
+            <span className="text-zinc-400">
+              {pipelineResult.trace.filter((s) => !s.error && !s.skipped).length} steps OK
+            </span>
+          </div>
+          <article className="rounded-2xl border border-teal-800/50 bg-gradient-to-b from-teal-950/25 to-zinc-950/40 p-5 shadow-xl shadow-black/25">
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <h2 className="text-lg font-semibold text-teal-100">Final joint answer</h2>
               <span
@@ -1294,27 +1206,30 @@ export default function App() {
               </span>
             </div>
             <p className="mb-3 text-xs text-teal-200/70">
-              Generated sequentially from draft, critique, improvement, verification notes,
-              and final pass.
+              Draft → critique → improve → verify → final. Markdown rendered below.
             </p>
             {pipelineResult.trace.some((s) =>
               (s.attachment_note ?? "").includes("Images used"),
             ) ? (
               <p className="mb-3 text-xs text-teal-300/85">
-                Draft (and verify when vision-capable) received your image attachments; later steps
-                primarily use text from prior stages.
+                Draft (and verify when vision-capable) received image attachments; later steps use
+                text from prior stages.
               </p>
             ) : null}
-            <div className="rounded-lg border border-slate-800/80 bg-slate-950/50 px-4 py-4">
-              <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">
-                {pipelineResult.final_answer ??
-                  "Pipeline did not produce a final answer. Check the trace below."}
-              </p>
+            <div className="rounded-xl border border-slate-800/80 bg-slate-950/70 px-4 py-4">
+              {pipelineResult.final_answer ? (
+                <MarkdownContent markdown={pipelineResult.final_answer} />
+              ) : (
+                <p className="text-sm text-slate-400">
+                  Pipeline did not produce a final answer. Expand the trace below.
+                </p>
+              )}
             </div>
-          </section>
+          </article>
 
           <section>
             <h2 className="mb-4 text-lg font-semibold text-slate-100">Pipeline trace</h2>
+            <p className="mb-3 text-xs text-zinc-500">Steps are collapsed — expand to inspect.</p>
             <div className="space-y-3">
               {pipelineResult.trace.map((step, i) => (
                 <PipelineStepCard key={`${step.step}-${i}`} step={step} />
@@ -1324,152 +1239,22 @@ export default function App() {
         </section>
       ) : null}
 
-      {/* Judge + synthesis (compare + synthesize mode) */}
-      {evaluation && outputs ? (
-        <section className="mb-8 space-y-6">
-          <div className="rounded-2xl border border-amber-900/40 bg-amber-950/20 p-5 shadow-lg shadow-black/20">
-            <h2 className="mb-2 text-lg font-semibold text-amber-100">Judge summary</h2>
-            <p className="mb-3 text-xs text-amber-200/70">
-              Judge model{" "}
-              <code className="font-mono text-amber-100/90">{evaluation.judge_model_id}</code>
-              {" — "}subjective rubric; no web access.
-            </p>
-            {hasImageAttachments ? (
-              <p className="mb-3 rounded-lg border border-amber-800/40 bg-slate-950/50 px-3 py-2 text-xs text-amber-200/85">
-                Images were attached. Models marked “Text only” did not receive pixels and were
-                skipped by default. Scores treat unequal inputs as described in the judge prompt.
-              </p>
-            ) : null}
-            {evaluation.excluded_failed_summary.length > 0 ? (
-              <div className="mb-4 rounded-lg border border-amber-800/30 bg-slate-950/40 px-3 py-2">
-                <p className="text-xs font-medium uppercase tracking-wide text-amber-200/80">
-                  Excluded from scoring
-                </p>
-                <ul className="mt-1 list-inside list-disc text-xs text-slate-400">
-                  {evaluation.excluded_failed_summary.map((line, i) => (
-                    <li key={`${i}-${line.slice(0, 48)}`} className="font-mono">
-                      {line}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            <p className="mb-4 text-sm leading-relaxed text-slate-200">{evaluation.rationale}</p>
-
-            <div className="mb-4 flex flex-wrap gap-2">
-              <span className="rounded-full border border-emerald-800/50 bg-emerald-950/40 px-3 py-1 text-xs text-emerald-100/90">
-                Best quality:{" "}
-                <span className="font-medium text-emerald-50">
-                  {evaluation.highlights.best_quality_model_id
-                    ? labelForModelId(outputs, evaluation.highlights.best_quality_model_id)
-                    : "—"}
-                </span>
-              </span>
-              <span className="rounded-full border border-slate-700 bg-slate-950/60 px-3 py-1 text-xs text-slate-400">
-                Best value:{" "}
-                {evaluation.highlights.best_value_model_id ? (
-                  <span className="font-medium text-slate-200">
-                    {labelForModelId(outputs, evaluation.highlights.best_value_model_id)}
-                  </span>
-                ) : (
-                  <span className="italic text-slate-500">not tracked yet</span>
-                )}
-              </span>
-              <span className="rounded-full border border-sky-800/50 bg-sky-950/40 px-3 py-1 text-xs text-sky-100/90">
-                Fastest:{" "}
-                {evaluation.highlights.fastest_model_id ? (
-                  <span className="font-medium text-sky-50">
-                    {labelForModelId(outputs, evaluation.highlights.fastest_model_id)}
-                  </span>
-                ) : (
-                  <span className="italic text-slate-500">no latency sent</span>
-                )}
-              </span>
-            </div>
-
-            <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/60">
-              <table className="w-full min-w-[640px] text-left text-sm text-slate-300">
-                <thead>
-                  <tr className="border-b border-slate-800 text-xs uppercase tracking-wide text-slate-500">
-                    <th className="px-2 py-2">Model</th>
-                    <th className="px-2 py-2">Overall</th>
-                    <th className="px-2 py-2">Accuracy</th>
-                    <th className="px-2 py-2">Clarity</th>
-                    <th className="px-2 py-2">Complete</th>
-                    <th className="px-2 py-2">Evidence</th>
-                    <th className="px-2 py-2">Recency</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(evaluation.scores).map(([id, s]) => (
-                    <tr
-                      key={id}
-                      className={
-                        id === evaluation.winner_model_id
-                          ? "bg-amber-500/10 text-amber-50"
-                          : "border-t border-slate-800/80"
-                      }
-                    >
-                      <td className="px-2 py-2 font-mono text-[11px]">{id}</td>
-                      <td className="px-2 py-2">{s.overall}</td>
-                      <td className="px-2 py-2">{s.accuracy}</td>
-                      <td className="px-2 py-2">{s.clarity}</td>
-                      <td className="px-2 py-2">{s.completeness}</td>
-                      <td className="px-2 py-2">{s.evidence}</td>
-                      <td className="px-2 py-2">{s.recency}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {evaluation.final_synthesis ? (
-            <section className="rounded-2xl border border-teal-800/50 bg-teal-950/15 p-5 shadow-lg shadow-black/20">
-              <h2 className="mb-2 text-lg font-semibold text-teal-100">
-                Final synthesized answer
-              </h2>
-              <p className="mb-3 text-xs text-teal-200/70">
-                Combined from successful model outputs only. Use this as your primary answer;
-                check individual cards if models disagreed.
-              </p>
-              {hasImageAttachments && outputs ? (
-                <p className="mb-3 text-xs text-teal-300/80">
-                  {outputs.some(
-                    (o) =>
-                      !o.skipped &&
-                      !o.error &&
-                      (o.attachment_note ?? "").startsWith("Images used"),
-                  )
-                    ? "Final answer reflects models that processed your attachments where noted on each card."
-                    : "No scored model processed images — synthesis may be text-only relative to your attachments."}
-                </p>
-              ) : null}
-              <div className="rounded-lg border border-slate-800/80 bg-slate-950/50 px-4 py-4">
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-100">
-                  {evaluation.final_synthesis}
-                </p>
-              </div>
-            </section>
-          ) : null}
-        </section>
-      ) : null}
-
-      {/* Individual response cards */}
-      {outputs && outputs.length > 0 ? (
-        <section>
-          <h2 className="mb-4 text-lg font-semibold text-slate-100">Responses</h2>
-          <div className="grid gap-6 md:grid-cols-2">
-            {outputs.map((o) => (
-              <OutputCard
-                key={`${o.model_id}-${o.label}`}
-                row={o}
-                winnerId={evaluation?.winner_model_id ?? null}
-                score={evaluation?.scores[o.model_id]}
-              />
-            ))}
-          </div>
-        </section>
+      {/* Synthesize: polished dashboard (final answer first, judge, leaderboard, …) */}
+      {evaluation && outputs && outputs.length > 0 ? (
+        <SynthesisResultsDashboard
+          outputs={outputs}
+          evaluation={evaluation}
+          models={models}
+          hasImageAttachments={hasImageAttachments}
+          projectSelected={project !== null}
+          userSignedIn={user !== null}
+        />
+      ) : outputs && outputs.length > 0 && !pipelineResult ? (
+        <CompareRunResultsDashboard
+          outputs={outputs}
+          models={models}
+          hasImageAttachments={hasImageAttachments}
+        />
       ) : null}
 
       {/* History panel */}

@@ -102,6 +102,18 @@ export type EvaluationHighlights = {
   fastest_model_id: string | null;
 };
 
+export type ModelAgreement = {
+  agreed: string[];
+  differed: string[];
+};
+
+export type PerModelJudgeNote = {
+  best_for?: string | null;
+  strength?: string | null;
+  weakness?: string | null;
+  note?: string | null;
+};
+
 export type EvaluationResult = {
   scores: Record<string, ModelScore>;
   winner_model_id: string;
@@ -110,6 +122,9 @@ export type EvaluationResult = {
   final_synthesis: string | null;
   highlights: EvaluationHighlights;
   excluded_failed_summary: string[];
+  winner_strengths?: string[];
+  model_agreement?: ModelAgreement;
+  per_model_notes?: Record<string, PerModelJudgeNote>;
 };
 
 export type FailedAttempt = {
@@ -172,7 +187,16 @@ export async function evaluateResponses(
     const text = await res.text();
     throw new Error(text || `Evaluate failed: ${res.status}`);
   }
-  return res.json();
+  const raw = (await res.json()) as EvaluationResult;
+  return {
+    ...raw,
+    winner_strengths: Array.isArray(raw.winner_strengths) ? raw.winner_strengths : [],
+    model_agreement: raw.model_agreement ?? { agreed: [], differed: [] },
+    per_model_notes:
+      raw.per_model_notes && typeof raw.per_model_notes === "object"
+        ? raw.per_model_notes
+        : {},
+  };
 }
 
 export async function runPipeline(
